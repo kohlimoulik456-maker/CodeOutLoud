@@ -77,7 +77,7 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 
 ## Core Loop (3-minute table demo)
 
-1. Select difficulty and interviewer persona → press **Start verbal pitch**
+1. Choose difficulty, programming language, and up to eight LeetCode topic tags; fetch a matching free question and press **Start verbal pitch**
 2. Speak your approach in Hinglish — the editor stays **locked** until brute-force, algorithm, and complexity are all detected
 3. On approval, the editor unlocks and the **Articulate Like a Pro** card shows the corporate English translation
 4. Write code — a **curveball** fires automatically after 30 s, played aloud via speech synthesis
@@ -90,7 +90,7 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 
 - `/` — public progress dashboard; shows Supabase history when a valid signed-in session is available, otherwise preview mode.
 - `/login` — email/password sign-in and account creation.
-- `/interview` — voice-first DSA interview arena; guest results stay in this browser and signed-in results sync to Supabase.
+- `/interview` — configure difficulty, language, and LeetCode topic tags, then practice against the fetched problem statement and language-specific starter code; guest results stay in this browser and signed-in results sync to Supabase.
 - `/master-interview` — protected locked Pro-feature preview.
 
 Authentication and signed-in session persistence use Supabase Auth and PostgreSQL. Guest interview summaries are stored locally in the browser. Apply [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor before running the app. Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to credentials from the same Supabase project. Sign-up uses Supabase email confirmation unless email confirmations are disabled in the project settings. Configure the callback redirect URL in Supabase Auth settings.
@@ -103,7 +103,7 @@ Authentication and signed-in session persistence use Supabase Auth and PostgreSQ
 | Code editor | `@monaco-editor/react` |
 | Speech in | Web Speech API (`SpeechRecognition`) — zero latency, zero cost; manual textarea fallback |
 | Speech out | Web Speech Synthesis API (`speechSynthesis`) |
-| AI backend | Groq API — `llama-3.3-70b-versatile` via Next.js Route Handlers (under 1.5 s per call) |
+| AI backend | Groq API — `openai/gpt-oss-120b` via Next.js Route Handlers |
 | State persistence | Supabase PostgreSQL for signed-in users; browser storage for guest summaries |
 
 ---
@@ -128,7 +128,7 @@ npm run dev
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-Supabase project credentials and the SQL schema are required for sign-in and account history, but guest practice is available without signing in. The prep coach and AI interview feedback require a server-side `GROQ_API_KEY`; without it, pitch checks use a local heuristic and guest summaries still save in this browser. In-browser test checks currently support the JavaScript Two Sum exercise only.
+Supabase project credentials and the SQL schema are required for sign-in and account history, but guest practice is available without signing in. LeetCode problem search uses its public GraphQL endpoint and needs no API key; network failures and unavailable matches are shown in the setup screen. The prep coach and AI interview feedback require a server-side `GROQ_API_KEY`; without it, pitch checks use a local heuristic and guest summaries still save in this browser. Code execution is not connected to Judge0 yet: only JavaScript Two Sum has a local test runner, and other problem/language combinations are explicitly marked as not executed.
 
 ---
 
@@ -152,4 +152,4 @@ Supabase project credentials and the SQL schema are required for sign-in and acc
 
 ## AI Attribution
 
-The dashboard prep coach and interview AI endpoints use Groq / Llama 3.3 70B when `GROQ_API_KEY` is configured. When it is unavailable, the app reports that state and uses a local pitch heuristic rather than presenting fabricated AI feedback.
+The dashboard prep coach and interview AI endpoints use Groq / GPT-OSS 120B when `GROQ_API_KEY` is configured. When it is unavailable, the app reports that state and uses a local pitch heuristic rather than presenting fabricated AI feedback.

@@ -91,3 +91,30 @@ textarea {
 .interview-workspace [class*="border-emerald-"] {
   border-color: #d7c49a !important;
 }
+
+.leet-code-content ul,
+.leet-code-content ol {
+  padding-left: 1.5rem;
+}
+
+.leet-code-content ul {
+  list-style: disc;
+}
+
+.leet-code-content ol {
+  list-style: decimal;
+}
+
+.leet-code-content pre {
+  overflow-x: auto;
+  border-radius: 0.75rem;
+  background: #f1f0ed;
+  padding: 0.75rem;
+}
+
+.leet-code-content code {
+  border-radius: 0.25rem;
+  background: #f1f0ed;
+  padding: 0.1rem 0.25rem;
+  font-family: var(--font-geist-mono), monospace;
+}

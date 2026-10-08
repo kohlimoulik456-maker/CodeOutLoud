@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = "openai/gpt-oss-120b";
 
 type InterviewerMode = "FAANG Bar Raiser" | "Empathetic Senior Dev" | "Strict Edge-Case Specialist";
 
@@ -15,11 +15,12 @@ const personaInstructions: Record<InterviewerMode, string> = {
 };
 
 export async function POST(req: NextRequest) {
-  const { code, transcript, interviewerMode, trigger } = (await req.json()) as {
+  const { code, transcript, interviewerMode, trigger, problemTitle } = (await req.json()) as {
     code: string;
     transcript: string;
     interviewerMode: string;
     trigger: "nested_loop" | "missing_boundary" | "silence" | "random";
+    problemTitle?: string;
   };
 
   const apiKey = process.env.GROQ_API_KEY;
@@ -49,13 +50,13 @@ export async function POST(req: NextRequest) {
 
 Context trigger: ${triggerContext[trigger] ?? triggerContext.random}
 
-You will be given the candidate's current code and their verbal transcript so far.
+You will be given the problem title, the candidate's current code, and their verbal transcript so far.
 Generate EXACTLY ONE short, punchy interviewer interruption question (1–2 sentences max).
 The question must be directly relevant to what they have written or said.
 Do NOT offer hints or answers. Ask only the question.
 Respond ONLY with the question text — no JSON, no preamble.`;
 
-  const userMessage = `Candidate's code so far:\n\`\`\`\n${code.slice(0, 800)}\n\`\`\`\n\nCandidate's verbal transcript:\n"${transcript.slice(0, 600)}"`;
+  const userMessage = `Problem: ${problemTitle?.slice(0, 200) ?? "DSA interview"}\n\nCandidate's code so far:\n\`\`\`\n${code.slice(0, 800)}\n\`\`\`\n\nCandidate's verbal transcript:\n"${transcript.slice(0, 600)}"`;
 
   try {
     const groqRes = await fetch(GROQ_API_URL, {

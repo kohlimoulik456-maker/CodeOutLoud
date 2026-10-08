@@ -1,9 +1,9 @@
 import { connection } from "next/server";
-import InterviewArena from "./InterviewArena";
+import InterviewSetup from "./InterviewSetup";
 
 export const instant = false;
 
 export default async function InterviewPage() {
   await connection();
-  return <InterviewArena />;
+  return <InterviewSetup />;
 }

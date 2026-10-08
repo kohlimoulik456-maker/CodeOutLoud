@@ -26,6 +26,7 @@ import {
 import type { SetStateAction } from "react";
 import UpgradeToProModal from "../../components/UpgradeToProModal";
 import { saveGuestSession, type SessionRecord } from "../../utils/session-history";
+import type { InterviewLanguage, LeetCodeProblem } from "./problem-types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,67 +75,7 @@ declare global {
 
 // ─── Static data ──────────────────────────────────────────────────────────────
 
-const problem = {
-  title: "Two Sum",
-  difficulty: "Easy",
-  pattern: "Product-Based / FAANG",
-  prompt:
-    "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to the target.",
-  constraints: [
-    "Each input has exactly one solution.",
-    "You may not use the same element twice.",
-    "Expected time complexity should be better than O(n²).",
-  ],
-};
-
-const defaultCode: Record<string, string> = {
-  JavaScript: `function twoSum(nums, target) {
-  const seen = new Map();
-  for (let i = 0; i < nums.length; i++) {
-    const diff = target - nums[i];
-    if (seen.has(diff)) return [seen.get(diff), i];
-    seen.set(nums[i], i);
-  }
-  return [];
-}`,
-  Python: `def two_sum(nums, target):
-    seen = {}
-    for i, num in enumerate(nums):
-        diff = target - num
-        if diff in seen:
-            return [seen[diff], i]
-        seen[num] = i
-    return []`,
-  "C++": `#include <unordered_map>
-#include <vector>
-using namespace std;
-
-vector<int> twoSum(vector<int>& nums, int target) {
-    unordered_map<int,int> seen;
-    for (int i = 0; i < (int)nums.size(); i++) {
-        int diff = target - nums[i];
-        if (seen.count(diff)) return {seen[diff], i};
-        seen[nums[i]] = i;
-    }
-    return {};
-}`,
-  Java: `import java.util.HashMap;
-
-class Solution {
-    public int[] twoSum(int[] nums, int target) {
-        HashMap<Integer, Integer> seen = new HashMap<>();
-        for (int i = 0; i < nums.length; i++) {
-            int diff = target - nums[i];
-            if (seen.containsKey(diff)) return new int[]{seen.get(diff), i};
-            seen.put(nums[i], i);
-        }
-        return new int[]{};
-    }
-}`,
-};
-
-const LANGUAGES = ["JavaScript", "Python", "C++", "Java"] as const;
-type Language = (typeof LANGUAGES)[number];
+type Language = InterviewLanguage;
 
 const INTERVIEWER_MODES = [
   "FAANG Bar Raiser",
@@ -178,17 +119,18 @@ function analyzePitchLocal(transcript: string) {
   if (!hasComplexity) missing.push("time and space complexity");
 
   const translation = hasAlgo
-    ? lower.includes("map") || lower.includes("hash")
-      ? "I will identify the brute-force pair-scan, then deploy a hash map to track complements — delivering O(n) time and O(n) auxiliary space."
-      : lower.includes("pointer")
-        ? "I will start with the naive scan, then optimize via a two-pointer strategy after sorting, achieving O(n log n) time and O(1) extra space."
-        : "I will reason through the brute-force approach first, then select the appropriate algorithm for an optimal solution."
-    : "I will reason through the brute-force approach, then leverage a hash map to reduce the time complexity to O(n) with O(n) space.";
+    ? "I will establish the baseline, explain the selected algorithm or data structure, and justify its time and space complexity."
+    : "I will compare a straightforward solution with a more efficient technique, then explain its time and space complexity.";
 
   return { valid: missing.length === 0, missing, translation };
 }
 
-function evaluateCode(code: string): {
+function evaluateCode(
+  code: string,
+  questionSlug: string,
+  language: Language,
+): {
+  tested: boolean;
   passRate: number;
   passed: boolean;
   error?: string;
@@ -199,12 +141,21 @@ function evaluateCode(code: string): {
     { nums: [3, 3], target: 6, expected: [0, 1] },
     { nums: [1, 2, 3, 4, 6], target: 10, expected: [3, 4] },
   ];
+  if (questionSlug !== "two-sum" || language !== "JavaScript") {
+    return {
+      tested: false,
+      passRate: 0,
+      passed: false,
+      error: "Automated execution is not available for this problem and language. Your code was not run.",
+    };
+  }
   try {
-    if (!code.includes("function twoSum") && !code.includes("const twoSum")) {
+    if (!/\b(?:function|const|let|var)\s+twoSum\b/.test(code)) {
       return {
+        tested: true,
         passRate: 0,
         passed: false,
-        error: "In-browser test checks currently support the JavaScript Two Sum solution only.",
+        error: "The Two Sum JavaScript runner expects a function named twoSum.",
       };
     }
     const runner = new Function("nums", "target", `${code}; return twoSum(nums, target);`);
@@ -213,9 +164,10 @@ function evaluateCode(code: string): {
       return JSON.stringify(actual) === JSON.stringify(expected);
     });
     const passRate = (results.filter(Boolean).length / results.length) * 100;
-    return { passRate, passed: passRate === 100 };
+    return { tested: true, passRate, passed: passRate === 100 };
   } catch (err) {
     return {
+      tested: true,
       passRate: 0,
       passed: false,
       error: err instanceof Error ? err.message : "Compilation error.",
@@ -227,11 +179,15 @@ function buildScoreNumbers(
   transcript: string,
   silenceSeconds: number,
   code: string,
+  questionSlug: string,
+  language: Language,
 ): ScoreNumbers {
-  const codeResults = evaluateCode(code);
-  const algorithmic = codeResults.passed
-    ? 96
-    : Math.max(35, Math.round(codeResults.passRate * 0.8));
+  const codeResults = evaluateCode(code, questionSlug, language);
+  const algorithmic = codeResults.tested
+    ? codeResults.passed
+      ? 96
+      : Math.max(35, Math.round(codeResults.passRate * 0.8))
+    : 60;
   const words = transcript.trim().split(/\s+/).filter(Boolean).length;
   const fillers = countFillerWords(transcript);
   const talkRatio = Math.min(100, Math.round((words / Math.max(1, words + 22)) * 100));
@@ -270,9 +226,11 @@ function buildScoreNumbers(
     deadAirPercent,
     fillerWordsPerMinute,
     toneConfidence,
-    testSummary: codeResults.passed
-      ? "All standard test cases passed including duplicate and multi-solution edge scenarios."
-      : "The solution is close — add boundary and duplicate coverage before submission.",
+    testSummary: codeResults.tested
+      ? codeResults.passed
+        ? "All standard test cases passed including duplicate and multi-solution edge scenarios."
+        : "The solution did not pass all available standard test cases."
+      : codeResults.error ?? "Code was not executed.",
   };
 }
 
@@ -298,7 +256,7 @@ function freshSession(): PersistedSession {
     language: "JavaScript",
     interviewerMode: "FAANG Bar Raiser",
     editorLocked: true,
-    code: defaultCode["JavaScript"],
+    code: "",
     transcript: "",
     translation: "",
     silenceSeconds: 0,
@@ -359,7 +317,17 @@ function updateSessionField<K extends keyof PersistedSession>(
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function Home() {
+type InterviewArenaProps = {
+  problem: LeetCodeProblem;
+  initialLanguage: Language;
+  onChooseAnotherProblem: () => void;
+};
+
+export default function InterviewArena({
+  problem,
+  initialLanguage,
+  onChooseAnotherProblem,
+}: InterviewArenaProps) {
   const initial = JSON.parse(
     useSyncExternalStore(
       subscribeToSession,
@@ -378,8 +346,6 @@ export default function Home() {
   const silenceSeconds = initial.silenceSeconds;
   const setStage = (value: SetStateAction<Stage>) =>
     updateSessionField("stage", value);
-  const setLanguage = (value: SetStateAction<Language>) =>
-    updateSessionField("language", value);
   const setInterviewerMode = (value: SetStateAction<InterviewerMode>) =>
     updateSessionField("interviewerMode", value);
   const setEditorLocked = (value: SetStateAction<boolean>) =>
@@ -392,6 +358,16 @@ export default function Home() {
     updateSessionField("translation", value);
   const setSilenceSeconds = (value: SetStateAction<number>) =>
     updateSessionField("silenceSeconds", value);
+
+  useEffect(() => {
+    if (stage === "setup" && !code) {
+      writeSessionSnapshot({
+        ...loadSession(),
+        language: initialLanguage,
+        code: problem.codeTemplates[initialLanguage],
+      });
+    }
+  }, [stage, code, initialLanguage, problem.codeTemplates]);
 
   // UI state
   const [isListening, setIsListening] = useState(false);
@@ -558,12 +534,19 @@ export default function Home() {
   const fireCurveball = useCallback(async (
     trigger: "nested_loop" | "missing_boundary" | "silence" | "random" = "random",
   ) => {
+    updateSessionField("editorLocked", true);
     setCurveballLoading(true);
     try {
       const res = await fetch("/api/curveball", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, transcript, interviewerMode, trigger }),
+        body: JSON.stringify({
+          code,
+          transcript,
+          interviewerMode,
+          trigger,
+          problemTitle: problem.title,
+        }),
       });
 
       let question: string;
@@ -594,7 +577,7 @@ export default function Home() {
     } finally {
       setCurveballLoading(false);
     }
-  }, [code, transcript, interviewerMode, speakAi]);
+  }, [code, transcript, interviewerMode, problem.title, speakAi]);
 
   // Auto-fire curveball once after CURVEBALL_AUTO_SEC seconds of coding.
   useEffect(() => {
@@ -625,6 +608,7 @@ export default function Home() {
     setCurveballResponse("");
     setErrorBanner(null);
     setTranscript((t) => `${t} ${response}`.trim());
+    setEditorLocked(false);
     speakAi("Good reasoning. Keep going — finish your implementation and continue narrating.");
   };
 
@@ -634,7 +618,7 @@ export default function Home() {
     numbers: ScoreNumbers,
     fillerCount: number,
   ) => {
-    const passed = evaluateCode(code).passed;
+    const passed = evaluateCode(code, problem.titleSlug, language).passed;
     const localSession: SessionRecord = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
@@ -658,7 +642,7 @@ export default function Home() {
           communicationScore: numbers.communication,
           deadAirPercent: numbers.deadAirPercent,
           fillerCount,
-          questionId: "two-sum",
+          questionId: problem.questionFrontendId,
           questionTitle: problem.title,
           difficulty: problem.difficulty,
           hintsUsed: 0,
@@ -670,6 +654,8 @@ export default function Home() {
             audit,
             auditSummary,
             silenceSeconds,
+            questionSlug: problem.titleSlug,
+            language,
           },
         }),
       });
@@ -703,7 +689,13 @@ export default function Home() {
     stopSpeechCapture();
     setScorecardLoading(true);
 
-    const numbers = buildScoreNumbers(transcript, silenceSeconds, code);
+    const numbers = buildScoreNumbers(
+      transcript,
+      silenceSeconds,
+      code,
+      problem.titleSlug,
+      language,
+    );
     const fillerCount = countFillerWords(transcript);
 
     let audit: AuditEntry[] = [];
@@ -765,9 +757,9 @@ export default function Home() {
     stopSpeechCapture();
     writeSessionSnapshot({
       ...freshSession(),
-      language,
+      language: initialLanguage,
       interviewerMode,
-      code: defaultCode[language],
+      code: problem.codeTemplates[initialLanguage],
     });
     setTranslation("");
     setCurveball(null);
@@ -781,7 +773,10 @@ export default function Home() {
 
   // ── Derived values ───────────────────────────────────────────────────────
 
-  const runtimeResult = useMemo(() => evaluateCode(code), [code]);
+  const runtimeResult = useMemo(
+    () => evaluateCode(code, problem.titleSlug, language),
+    [code, language, problem.titleSlug],
+  );
   const fillerCount = useMemo(() => countFillerWords(transcript), [transcript]);
   const wordCount = useMemo(
     () => transcript.trim().split(/\s+/).filter(Boolean).length,
@@ -838,6 +833,13 @@ export default function Home() {
                 Reset session
               </button>
             )}
+            <button
+              type="button"
+              onClick={onChooseAnotherProblem}
+              className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1 text-sm text-stone-600 hover:bg-[#eee9dc]"
+            >
+              Choose another problem
+            </button>
           </div>
         </header>
 
@@ -873,7 +875,7 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
-                  Interview setup
+                  LeetCode #{problem.questionFrontendId}
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold text-white">{problem.title}</h2>
               </div>
@@ -885,27 +887,16 @@ export default function Home() {
             <div className="space-y-3 text-sm">
               <div className="rounded-xl bg-slate-800/80 p-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Role pattern</p>
-                <p className="mt-1 font-medium text-slate-100">{problem.pattern}</p>
+                <p className="mt-1 font-medium text-slate-100">
+                  {problem.topicTags.map((tag) => tag.name).join(" · ") || "Data Structures & Algorithms"}
+                </p>
               </div>
 
               <div className="rounded-xl bg-slate-800/80 p-3">
-                <label htmlFor="language-select" className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
                   Language
-                </label>
-                <select
-                  id="language-select"
-                  value={language}
-                  onChange={(e) => {
-                    const lang = e.target.value as Language;
-                    setLanguage(lang);
-                    if (stage === "setup") setCode(defaultCode[lang]);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-500"
-                >
-                  {LANGUAGES.map((l) => (
-                    <option key={l}>{l}</option>
-                  ))}
-                </select>
+                </p>
+                <p className="mt-1 font-medium text-slate-100">{language}</p>
               </div>
 
               <div className="rounded-xl bg-slate-800/80 p-3">
@@ -926,16 +917,11 @@ export default function Home() {
             </div>
 
             <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
-              <p className="mb-2 text-sm font-medium text-cyan-200">Problem prompt</p>
-              <p className="text-sm leading-6 text-slate-300">{problem.prompt}</p>
-              <ul className="mt-3 space-y-1.5 text-sm text-slate-300" aria-label="Constraints">
-                {problem.constraints.map((c) => (
-                  <li key={c} className="flex gap-2">
-                    <span className="mt-0.5 shrink-0 text-cyan-300" aria-hidden>•</span>
-                    <span>{c}</span>
-                  </li>
-                ))}
-              </ul>
+              <p className="mb-2 text-sm font-medium text-cyan-200">Problem statement</p>
+              <article
+                className="leet-code-content space-y-3 text-sm leading-6 text-slate-300"
+                dangerouslySetInnerHTML={{ __html: problem.content }}
+              />
             </div>
 
             {stage === "setup" && (
@@ -1207,8 +1193,10 @@ export default function Home() {
             <div className="space-y-3">
               <div className="rounded-xl bg-slate-950/60 p-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Runtime check</p>
-                <p className="mt-1 text-lg font-semibold text-emerald-300">
-                  {Math.round(runtimeResult.passRate)}% pass rate
+                <p className={`mt-1 text-lg font-semibold ${runtimeResult.tested ? "text-emerald-300" : "text-amber-300"}`}>
+                  {runtimeResult.tested
+                    ? `${Math.round(runtimeResult.passRate)}% pass rate`
+                    : "Not executed"}
                 </p>
                 {runtimeResult.error && (
                   <p className="mt-1 text-xs text-rose-300">{runtimeResult.error}</p>
@@ -1251,7 +1239,13 @@ export default function Home() {
             {/* Score tiles */}
             <div className="grid gap-4 md:grid-cols-4">
               {[
-                { label: "Algorithmic correctness", value: score.algorithmic, color: "text-cyan-300" },
+                {
+                  label: runtimeResult.tested
+                    ? "Algorithmic correctness"
+                    : "Algorithmic (not executed)",
+                  value: score.algorithmic,
+                  color: "text-cyan-300",
+                },
                 { label: "Communication clarity", value: score.communication, color: "text-violet-300" },
                 { label: "Edge-case awareness", value: score.edge, color: "text-amber-300" },
                 { label: "Tone confidence", value: score.toneConfidence, color: "text-emerald-300" },
