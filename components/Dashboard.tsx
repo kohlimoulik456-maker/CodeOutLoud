@@ -152,9 +152,18 @@ export default function Dashboard({
     syncLocalSessions();
     window.addEventListener("storage", syncLocalSessions);
     window.addEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
+    let progressFrame = 0;
+    if (window.location.hash === "#progress") {
+      progressFrame = window.requestAnimationFrame(() => {
+        document
+          .getElementById("progress")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     return () => {
       window.removeEventListener("storage", syncLocalSessions);
       window.removeEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
+      if (progressFrame) window.cancelAnimationFrame(progressFrame);
     };
   }, []);
 
@@ -235,7 +244,7 @@ export default function Dashboard({
         </p>
         <nav className="space-y-1">
           <Link
-            href="/#overview"
+            href="#overview"
             className="flex items-center gap-3 rounded-xl bg-white/10 px-3 py-2.5 text-sm text-white"
           >
             <LayoutDashboard size={17} className="text-[#d8bb79]" />
@@ -249,7 +258,12 @@ export default function Dashboard({
             Practice interview
           </Link>
           <Link
-            href="/#progress"
+            href="#progress"
+            onClick={() =>
+              document
+                .getElementById("progress")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-stone-400 transition hover:bg-white/5 hover:text-white"
           >
             <BarChart3 size={17} />
@@ -339,7 +353,15 @@ export default function Dashboard({
           <Link href="/interview" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
             Practice
           </Link>
-          <Link href="/#progress" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
+          <Link
+            href="#progress"
+            onClick={() =>
+              document
+                .getElementById("progress")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+            className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white"
+          >
             Progress
           </Link>
         </nav>
