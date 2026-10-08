@@ -86,6 +86,15 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 
 ---
 
+## Product surfaces
+
+- `/login` — email/password sign-in and account creation.
+- `/` — protected progress dashboard backed by the signed-in user's Supabase records.
+- `/interview` — protected voice-first DSA interview arena.
+- `/master-interview` — protected locked Pro-feature preview.
+
+Authentication and session persistence use Supabase Auth and PostgreSQL. Apply [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor before running the app. Sign-up uses Supabase email confirmation unless email confirmations are disabled in the project settings. Configure the callback redirect URL in Supabase Auth settings.
+
 ## Tech Stack
 
 | Layer | Choice |
@@ -95,7 +104,7 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 | Speech in | Web Speech API (`SpeechRecognition`) — zero latency, zero cost; manual textarea fallback |
 | Speech out | Web Speech Synthesis API (`speechSynthesis`) |
 | AI backend | Groq API — `llama-3.3-70b-versatile` via Next.js Route Handlers (under 1.5 s per call) |
-| State persistence | `localStorage` — session survives page refresh |
+| State persistence | Supabase PostgreSQL — session records scoped to the signed-in user with row-level security |
 
 ---
 
@@ -107,16 +116,19 @@ npm install
 
 # 2. Copy env template and add your Groq key
 cp .env.local.example .env.local
-# Edit .env.local → set GROQ_API_KEY=your_groq_api_key_here
-# Get a free key at https://console.groq.com
+# Set Supabase URL/key and your site URL in .env.local.
+# Set GROQ_API_KEY for AI-generated evaluation (optional).
 
-# 3. Start dev server
+# 3. Apply supabase/schema.sql in Supabase Dashboard → SQL Editor
+# Also allow http://localhost:3000/auth/callback in Supabase Auth URL settings.
+
+# 4. Start dev server
 npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-The app works without a Groq key — pitch validation falls back to a client-side heuristic and the scorecard skips the AI audit trail.
+Supabase project credentials and the SQL schema are required for sign-in and protected routes. The app works without a Groq key — pitch validation falls back to a client-side heuristic and the scorecard skips the AI audit trail.
 
 ---
 
