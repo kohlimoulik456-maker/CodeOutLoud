@@ -151,6 +151,7 @@ export default function Dashboard({
 }) {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [localSessions, setLocalSessions] = useState<SessionRecord[]>([]);
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
 
   useEffect(() => {
     function syncLocalSessions() {
@@ -176,6 +177,16 @@ export default function Dashboard({
       window.removeEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
       if (progressTimeout) window.clearTimeout(progressTimeout);
     };
+  }, []);
+
+  useEffect(() => {
+    function updateCurrentTime() {
+      setCurrentTime(new Date());
+    }
+
+    updateCurrentTime();
+    const interval = window.setInterval(updateCurrentTime, 60_000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const allSessions = useMemo(() => {
@@ -377,8 +388,31 @@ export default function Dashboard({
                 YOUR PERSONAL INTERVIEW STUDIO
               </p>
               <h1 className="text-[30px] font-semibold tracking-[-0.05em] sm:text-[36px]">
-                Good afternoon.
+                {currentTime
+                  ? `Good ${
+                      currentTime.getHours() < 12
+                        ? "morning"
+                        : currentTime.getHours() < 17
+                          ? "afternoon"
+                          : "evening"
+                    }.`
+                  : "Hello."}
               </h1>
+              {currentTime && (
+                <p className="mt-1.5 text-sm text-stone-500">
+                  {new Intl.DateTimeFormat(undefined, {
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  }).format(currentTime)}
+                  {" · "}
+                  {new Intl.DateTimeFormat(undefined, {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  }).format(currentTime)}
+                </p>
+              )}
               <p className="mt-1.5 text-sm text-stone-500">
                 Make your next answer as strong as your next solution.
               </p>
