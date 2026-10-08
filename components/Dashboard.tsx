@@ -261,13 +261,13 @@ export default function Dashboard({
             <LayoutDashboard size={17} className="text-[#d8bb79]" />
             Overview
           </Link>
-          <Link
+          <a
             href="/interview"
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-stone-400 transition hover:bg-white/5 hover:text-white"
           >
             <Mic2 size={17} />
             Practice interview
-          </Link>
+          </a>
           <Link
             href="#progress"
             onClick={scrollToProgress}
@@ -357,9 +357,9 @@ export default function Dashboard({
           <Link href="/" className="rounded-lg bg-white px-3 py-2 text-xs font-medium text-stone-700">
             Dashboard
           </Link>
-          <Link href="/interview" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
+          <a href="/interview" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
             Practice
-          </Link>
+          </a>
           <Link
             href="#progress"
             onClick={scrollToProgress}
@@ -383,14 +383,14 @@ export default function Dashboard({
                 Make your next answer as strong as your next solution.
               </p>
             </div>
-            <Link
+            <a
               href="/interview"
               className="inline-flex w-fit items-center gap-2 rounded-xl bg-[#1c1c19] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:bg-[#33322d]"
             >
               <Plus size={16} />
               Start an interview
               <ArrowRight size={15} />
-            </Link>
+            </a>
           </div>
 
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -414,13 +414,13 @@ export default function Dashboard({
                     A realistic DSA mock interview that keeps your editor locked
                     until you can explain your approach.
                   </p>
-                  <Link
+                  <a
                     href="/interview"
                     className="mt-6 inline-flex items-center gap-2 rounded-lg bg-[#d2b36d] px-4 py-2.5 text-sm font-semibold text-[#201d16] transition hover:bg-[#e1c982]"
                   >
                     Start your first session
                     <ArrowRight size={15} />
-                  </Link>
+                  </a>
                 </div>
                 <div className="absolute bottom-8 right-9 hidden h-[140px] w-[180px] items-center justify-center sm:flex">
                   <div className="absolute size-36 rounded-full border border-[#c8a45c]/20" />
@@ -558,7 +558,7 @@ export default function Dashboard({
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
-                  <Link
+                  <a
                     href="/interview"
                     className="group flex min-h-[128px] flex-col justify-between rounded-2xl border border-[#c8a45c]/35 bg-[#fffdf8] p-4 transition hover:-translate-y-0.5 hover:border-[#c8a45c] hover:shadow-lg hover:shadow-[#c8a45c]/10"
                   >
@@ -577,7 +577,7 @@ export default function Dashboard({
                       </div>
                       <ArrowUpRight size={16} className="text-stone-400 transition group-hover:text-[#80602c]" />
                     </div>
-                  </Link>
+                  </a>
                   <SystemDesignCard />
                   <TheoryCard />
                 </div>
@@ -634,12 +634,12 @@ export default function Dashboard({
                       Finish a voice-first interview and your score, communication
                       audit, and problem history will appear here.
                     </p>
-                    <Link
+                    <a
                       href="/interview"
                       className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[#80602c] hover:text-[#5e451f]"
                     >
                       Practice your first problem <ArrowRight size={13} />
-                    </Link>
+                    </a>
                   </div>
                 )}
               </section>
