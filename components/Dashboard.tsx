@@ -288,9 +288,12 @@ export default function Dashboard({
                 {userEmail}
               </span>
               {userEmail === "Guest" ? (
-                <span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500">
-                  Preview
-                </span>
+                <Link
+                  href="/login"
+                  className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-600 transition hover:bg-[#e9dfc9] hover:text-[#725a2f]"
+                >
+                  Sign in
+                </Link>
               ) : (
                 <form action={signOut}>
                   <button

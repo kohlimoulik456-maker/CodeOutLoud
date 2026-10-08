@@ -89,11 +89,11 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 ## Product surfaces
 
 - `/` — public progress dashboard; shows Supabase history when a valid signed-in session is available, otherwise preview mode.
-- `/login` — temporarily redirects to the dashboard while account sign-in is on hold.
+- `/login` — email/password sign-in and account creation.
 - `/interview` — protected voice-first DSA interview arena.
 - `/master-interview` — protected locked Pro-feature preview.
 
-Authentication and session persistence use Supabase Auth and PostgreSQL. Apply [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor before running the app. Sign-up uses Supabase email confirmation unless email confirmations are disabled in the project settings. Configure the callback redirect URL in Supabase Auth settings.
+Authentication and session persistence use Supabase Auth and PostgreSQL. Apply [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor before running the app. Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to credentials from the same Supabase project. Sign-up uses Supabase email confirmation unless email confirmations are disabled in the project settings. Configure the callback redirect URL in Supabase Auth settings.
 
 ## Tech Stack
 
