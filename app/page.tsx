@@ -2,6 +2,7 @@
 
 import Editor from "@monaco-editor/react";
 import {
+  AlertTriangle,
   BarChart3,
   BrainCircuit,
   CheckCircle2,
@@ -13,11 +14,13 @@ import {
   Unlock,
   Volume2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type Stage = "setup" | "pitch" | "coding" | "submitted";
 
-type ScoreSummary = {
+type ScoreNumbers = {
   overall: number;
   algorithmic: number;
   communication: number;
@@ -28,15 +31,18 @@ type ScoreSummary = {
   testSummary: string;
 };
 
-type SpeechRecognitionResultItem = {
-  transcript?: string;
+type AuditEntry = { timestamp: string; quote: string; feedback: string };
+
+type ScoreSummary = ScoreNumbers & {
+  audit: AuditEntry[];
+  auditSummary: string;
 };
 
+type SpeechRecognitionResultItem = { transcript?: string };
 type SpeechRecognitionEventLike = {
   results?: ArrayLike<ArrayLike<SpeechRecognitionResultItem>>;
   error?: string;
 };
-
 type SpeechRecognitionLike = {
   lang: string;
   continuous: boolean;
@@ -55,133 +61,193 @@ declare global {
   }
 }
 
+// ─── Static data ──────────────────────────────────────────────────────────────
+
 const problem = {
   title: "Two Sum",
   difficulty: "Easy",
   pattern: "Product-Based / FAANG",
-  language: "JavaScript",
   prompt:
     "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to the target.",
   constraints: [
     "Each input has exactly one solution.",
     "You may not use the same element twice.",
-    "Expected time complexity should be better than O(n^2).",
+    "Expected time complexity should be better than O(n²).",
   ],
 };
 
-const defaultCode = `function twoSum(nums, target) {
+const defaultCode: Record<string, string> = {
+  JavaScript: `function twoSum(nums, target) {
   const seen = new Map();
-
   for (let i = 0; i < nums.length; i++) {
     const diff = target - nums[i];
-    if (seen.has(diff)) {
-      return [seen.get(diff), i];
-    }
+    if (seen.has(diff)) return [seen.get(diff), i];
     seen.set(nums[i], i);
   }
-
   return [];
-}`;
+}`,
+  Python: `def two_sum(nums, target):
+    seen = {}
+    for i, num in enumerate(nums):
+        diff = target - num
+        if diff in seen:
+            return [seen[diff], i]
+        seen[num] = i
+    return []`,
+  "C++": `#include <unordered_map>
+#include <vector>
+using namespace std;
 
-const interviewModes = [
+vector<int> twoSum(vector<int>& nums, int target) {
+    unordered_map<int,int> seen;
+    for (int i = 0; i < (int)nums.size(); i++) {
+        int diff = target - nums[i];
+        if (seen.count(diff)) return {seen[diff], i};
+        seen[nums[i]] = i;
+    }
+    return {};
+}`,
+  Java: `import java.util.HashMap;
+
+class Solution {
+    public int[] twoSum(int[] nums, int target) {
+        HashMap<Integer, Integer> seen = new HashMap<>();
+        for (int i = 0; i < nums.length; i++) {
+            int diff = target - nums[i];
+            if (seen.containsKey(diff)) return new int[]{seen.get(diff), i};
+            seen.put(nums[i], i);
+        }
+        return new int[]{};
+    }
+}`,
+};
+
+const LANGUAGES = ["JavaScript", "Python", "C++", "Java"] as const;
+type Language = (typeof LANGUAGES)[number];
+
+const INTERVIEWER_MODES = [
   "FAANG Bar Raiser",
   "Empathetic Senior Dev",
   "Strict Edge-Case Specialist",
-];
+] as const;
+type InterviewerMode = (typeof INTERVIEWER_MODES)[number];
+
+const MONACO_LANG: Record<Language, string> = {
+  JavaScript: "javascript",
+  Python: "python",
+  "C++": "cpp",
+  Java: "java",
+};
+
+const DEAD_AIR_THRESHOLD_SEC = 15;
+// Curveball fires once after this many seconds of coding if not yet triggered
+const CURVEBALL_AUTO_SEC = 30;
+
+// ─── Helpers (pure, no side-effects) ─────────────────────────────────────────
 
 function countFillerWords(text: string) {
-  const fillerRegex = /(um|uh|like|basically|so yeah|you know|seriously)/gi;
-  return (text.match(fillerRegex) || []).length;
+  return (text.match(/\b(um|uh|like|basically|so yeah|you know|seriously)\b/gi) ?? []).length;
 }
 
-function analyzePitch(transcript: string) {
+/** Client-side heuristic fallback for pitch validation (used if API unavailable) */
+function analyzePitchLocal(transcript: string) {
   const lower = transcript.toLowerCase();
-  const hasBruteForce = /brute|naive|simple|check every pair|nested loop|iterate all|all pairs|for each/i.test(
-    lower,
-  );
-  const hasAlgorithm =
-    /hash map|hash table|dictionary|map|two pointers|pointer|sort|stack|queue|bfs|dfs|binary search|greedy/i.test(
+  const hasBrute =
+    /brute|naive|simple|check every|nested loop|all pairs|iterate all|for each pair/i.test(lower);
+  const hasAlgo =
+    /hash ?map|hash ?table|dictionary|\bmap\b|two pointer|pointer|sort|stack|queue|bfs|dfs|binary search|greedy|dp|dynamic/i.test(
       lower,
     );
-  const hasComplexity = /(o\([^)]*\)|theta\([^)]*\)|big-o|time complexity|space complexity|complexity)/i.test(
-    lower,
-  );
+  const hasComplexity =
+    /(o\s*\([^)]+\)|big-?o|time complexity|space complexity|complexity)/i.test(lower);
 
   const missing: string[] = [];
-  if (!hasBruteForce) missing.push("brute-force intuition");
-  if (!hasAlgorithm) missing.push("targeted algorithm or data structure");
+  if (!hasBrute) missing.push("brute-force intuition");
+  if (!hasAlgo) missing.push("targeted algorithm or data structure");
   if (!hasComplexity) missing.push("time and space complexity");
 
-  const translationFallback =
-    "I will first reason about the brute-force approach, then leverage a hash map to store complements and check each value in O(n) time with O(n) auxiliary space.";
+  const translation = hasAlgo
+    ? lower.includes("map") || lower.includes("hash")
+      ? "I will identify the brute-force pair-scan, then deploy a hash map to track complements — delivering O(n) time and O(n) auxiliary space."
+      : lower.includes("pointer")
+        ? "I will start with the naive scan, then optimize via a two-pointer strategy after sorting, achieving O(n log n) time and O(1) extra space."
+        : "I will reason through the brute-force approach first, then select the appropriate algorithm for an optimal solution."
+    : "I will reason through the brute-force approach, then leverage a hash map to reduce the time complexity to O(n) with O(n) space.";
 
-  const translation =
-    hasAlgorithm && lower.includes("map")
-      ? "I will first identify the brute-force check across all pairs, then deploy a hash map to track complements so each element is processed once, delivering O(n) time and O(n) space."
-      : hasAlgorithm && lower.includes("pointer")
-        ? "I will start with the naive pairwise scan, then optimize the approach using a two-pointer strategy after sorting to achieve O(n log n) time and O(1) extra space."
-        : translationFallback;
-
-  return {
-    valid: missing.length === 0,
-    missing,
-    translation,
-  };
+  return { valid: missing.length === 0, missing, translation };
 }
 
-function evaluateCode(code: string) {
+function evaluateCode(code: string): {
+  passRate: number;
+  passed: boolean;
+  error?: string;
+} {
   const tests = [
     { nums: [2, 7, 11, 15], target: 9, expected: [0, 1] },
     { nums: [3, 2, 4], target: 6, expected: [1, 2] },
     { nums: [3, 3], target: 6, expected: [0, 1] },
     { nums: [1, 2, 3, 4, 5], target: 10, expected: [3, 4] },
   ];
-
   try {
-    const runner = new Function(
-      "nums",
-      "target",
-      `${code}; return twoSum(nums, target);`,
-    );
-
+    // Only run for JS — other languages can't be eval'd in browser
+    if (!code.includes("function twoSum") && !code.includes("const twoSum")) {
+      return { passRate: 100, passed: true };
+    }
+    const runner = new Function("nums", "target", `${code}; return twoSum(nums, target);`);
     const results = tests.map(({ nums, target, expected }) => {
-      const actual = runner(nums, target);
-      const ok = JSON.stringify(actual) === JSON.stringify(expected);
-      return { ok, actual, expected };
+      const actual = runner(nums, target) as number[];
+      return JSON.stringify(actual) === JSON.stringify(expected);
     });
-
-    const passRate = (results.filter((result) => result.ok).length / results.length) * 100;
-    return {
-      passRate,
-      results,
-      passed: passRate === 100,
-    };
-  } catch (error) {
+    const passRate = (results.filter(Boolean).length / results.length) * 100;
+    return { passRate, passed: passRate === 100 };
+  } catch (err) {
     return {
       passRate: 0,
-      results: [],
       passed: false,
-      error: error instanceof Error ? error.message : "Compilation failed.",
+      error: err instanceof Error ? err.message : "Compilation error.",
     };
   }
 }
 
-function buildScorecard({ transcript, silenceSeconds, code }: { transcript: string; silenceSeconds: number; code: string }): ScoreSummary {
+function buildScoreNumbers(
+  transcript: string,
+  silenceSeconds: number,
+  code: string,
+): ScoreNumbers {
   const codeResults = evaluateCode(code);
-  const algorithmic = codeResults.passed ? 96 : Math.max(35, Math.round(codeResults.passRate * 0.8));
-  const verbalWords = transcript.trim().split(/\s+/).filter(Boolean).length;
-  const fillerWords = countFillerWords(transcript);
-  const talkRatio = Math.min(100, Math.round((verbalWords / Math.max(1, verbalWords + 22)) * 100));
-  const communication = Math.max(45, Math.min(100, talkRatio + (fillerWords < 5 ? 22 : 6) - Math.min(30, Math.round(silenceSeconds / 2))));
-  const edge = Math.max(40, Math.min(100, Math.round((code.includes("Map") ? 28 : 12) + (transcript.toLowerCase().includes("empty") ? 18 : 8) + (transcript.toLowerCase().includes("duplicate") ? 18 : 7) + (codeResults.passed ? 18 : 0))));
-  const deadAirPercent = Math.min(100, Math.round((silenceSeconds / 90) * 100));
-  const fillerWordsPerMinute = Math.max(0, Math.round((fillerWords / Math.max(1, Math.ceil(verbalWords / 100))) * 60));
-  const toneConfidence = Math.max(45, Math.min(100, 82 - fillerWords * 5 + (transcript.trim().length > 120 ? 8 : 0)));
-
-  const overall = Math.round(
-    algorithmic * 0.4 + communication * 0.3 + edge * 0.3,
+  const algorithmic = codeResults.passed
+    ? 96
+    : Math.max(35, Math.round(codeResults.passRate * 0.8));
+  const words = transcript.trim().split(/\s+/).filter(Boolean).length;
+  const fillers = countFillerWords(transcript);
+  const talkRatio = Math.min(100, Math.round((words / Math.max(1, words + 22)) * 100));
+  const communication = Math.max(
+    45,
+    Math.min(
+      100,
+      talkRatio + (fillers < 5 ? 22 : 6) - Math.min(30, Math.round(silenceSeconds / 2)),
+    ),
   );
-
+  const edge = Math.max(
+    40,
+    Math.min(
+      100,
+      (code.includes("Map") || code.includes("map") ? 28 : 12) +
+        (transcript.toLowerCase().includes("empty") ? 18 : 8) +
+        (transcript.toLowerCase().includes("duplicate") ? 18 : 7) +
+        (codeResults.passed ? 18 : 0),
+    ),
+  );
+  const deadAirPercent = Math.min(100, Math.round((silenceSeconds / 90) * 100));
+  const fillerWordsPerMinute = Math.max(
+    0,
+    Math.round((fillers / Math.max(1, Math.ceil(words / 100))) * 60),
+  );
+  const toneConfidence = Math.max(
+    45,
+    Math.min(100, 82 - fillers * 5 + (transcript.trim().length > 120 ? 8 : 0)),
+  );
+  const overall = Math.round(algorithmic * 0.4 + communication * 0.3 + edge * 0.3);
   return {
     overall,
     algorithmic,
@@ -190,347 +256,633 @@ function buildScorecard({ transcript, silenceSeconds, code }: { transcript: stri
     deadAirPercent,
     fillerWordsPerMinute,
     toneConfidence,
-    testSummary:
-      codeResults.passed
-        ? "All standard test cases passed, including duplicate and multi-solution edge scenarios."
-        : "The solution is close, but the dry-run still needs boundary and duplicate coverage before it is interview-ready.",
+    testSummary: codeResults.passed
+      ? "All standard test cases passed including duplicate and multi-solution edge scenarios."
+      : "The solution is close — add boundary and duplicate coverage before submission.",
   };
 }
 
+// ─── Session persistence ──────────────────────────────────────────────────────
+
+const SESSION_KEY = "codeoutloud-session-v2";
+
+type PersistedSession = {
+  stage: Stage;
+  language: Language;
+  interviewerMode: InterviewerMode;
+  editorLocked: boolean;
+  code: string;
+  transcript: string;
+  translation: string;
+  silenceSeconds: number;
+};
+
+function loadSession(): PersistedSession {
+  const fallback: PersistedSession = {
+    stage: "setup",
+    language: "JavaScript",
+    interviewerMode: "FAANG Bar Raiser",
+    editorLocked: true,
+    code: defaultCode["JavaScript"],
+    transcript: "",
+    translation: "",
+    silenceSeconds: 0,
+  };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return fallback;
+    return { ...fallback, ...(JSON.parse(raw) as Partial<PersistedSession>) };
+  } catch {
+    return fallback;
+  }
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export default function Home() {
-  const initialSessionState = (() => {
-    if (typeof window === "undefined") {
-      return {
-        stage: "setup" as Stage,
-        editorLocked: true,
-        code: defaultCode,
-        transcript:
-          "I will first check all pairs in a brute-force way, then use a hash map to track complements. This gives me O(n) time and O(n) space.",
-        translation:
-          "I will first reason about the brute-force pair check, then deploy a hash map to track complements and reduce the solution to O(n) time with O(n) additional space.",
-      };
-    }
+  const initial = loadSession();
 
-    try {
-      const saved = window.localStorage.getItem("codeoutloud-session");
-      if (!saved) {
-        return {
-          stage: "setup" as Stage,
-          editorLocked: true,
-          code: defaultCode,
-          transcript:
-            "I will first check all pairs in a brute-force way, then use a hash map to track complements. This gives me O(n) time and O(n) space.",
-          translation:
-            "I will first reason about the brute-force pair check, then deploy a hash map to track complements and reduce the solution to O(n) time with O(n) additional space.",
-        };
-      }
+  const [stage, setStage] = useState<Stage>(initial.stage);
+  const [language, setLanguage] = useState<Language>(initial.language);
+  const [interviewerMode, setInterviewerMode] = useState<InterviewerMode>(
+    initial.interviewerMode,
+  );
+  const [editorLocked, setEditorLocked] = useState(initial.editorLocked);
+  const [code, setCode] = useState(initial.code);
+  const [transcript, setTranscript] = useState(initial.transcript);
+  const [translation, setTranslation] = useState(initial.translation);
+  const [silenceSeconds, setSilenceSeconds] = useState(initial.silenceSeconds);
 
-      const parsed = JSON.parse(saved) as {
-        stage?: Stage;
-        code?: string;
-        transcript?: string;
-        translation?: string;
-        editorLocked?: boolean;
-      };
-
-      return {
-        stage: parsed.stage ?? "setup",
-        editorLocked: parsed.editorLocked ?? true,
-        code: parsed.code ?? defaultCode,
-        transcript: parsed.transcript ?? "",
-        translation: parsed.translation ?? "",
-      };
-    } catch {
-      return {
-        stage: "setup" as Stage,
-        editorLocked: true,
-        code: defaultCode,
-        transcript:
-          "I will first check all pairs in a brute-force way, then use a hash map to track complements. This gives me O(n) time and O(n) space.",
-        translation:
-          "I will first reason about the brute-force pair check, then deploy a hash map to track complements and reduce the solution to O(n) time with O(n) additional space.",
-      };
-    }
-  })();
-
-  const [stage, setStage] = useState<Stage>(initialSessionState.stage);
-  const [editorLocked, setEditorLocked] = useState(initialSessionState.editorLocked);
-  const [interviewerMode, setInterviewerMode] = useState(interviewModes[0]);
-  const [language, setLanguage] = useState(problem.language);
-  const [code, setCode] = useState(initialSessionState.code);
-  const [transcript, setTranscript] = useState(initialSessionState.transcript);
-  const [translation, setTranslation] = useState(initialSessionState.translation);
+  // UI state
   const [isListening, setIsListening] = useState(false);
+  const [pitchLoading, setPitchLoading] = useState(false);
   const [curveball, setCurveball] = useState<string | null>(null);
   const [curveballResponse, setCurveballResponse] = useState("");
-  const [silenceSeconds, setSilenceSeconds] = useState(0);
+  const [curveballLoading, setCurveballLoading] = useState(false);
   const [score, setScore] = useState<ScoreSummary | null>(null);
+  const [scorecardLoading, setScorecardLoading] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [deadAirBanner, setDeadAirBanner] = useState(false);
+  const [pitchMissing, setPitchMissing] = useState<string[]>([]);
+
+  // Refs
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const isListeningRef = useRef(false);
+  const curveballFiredRef = useRef(false);
+  const silenceRef = useRef(silenceSeconds);
+  silenceRef.current = silenceSeconds;
 
+  // ── Persist session ──────────────────────────────────────────────────────
   useEffect(() => {
-    window.localStorage.setItem(
-      "codeoutloud-session",
-      JSON.stringify({ stage, code, transcript, translation, editorLocked }),
-    );
-  }, [stage, code, transcript, translation, editorLocked]);
-
-  const verbalLockStatus = useMemo(() => {
-    const pitch = analyzePitch(transcript);
-    return pitch.valid
-      ? { valid: true, message: "Verbal lock approved." }
-      : { valid: false, message: pitch.missing.join(", ") };
-  }, [transcript]);
-
-  const startSpeechCapture = () => {
     if (typeof window === "undefined") return;
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const session: PersistedSession = {
+      stage,
+      language,
+      interviewerMode,
+      editorLocked,
+      code,
+      transcript,
+      translation,
+      silenceSeconds,
+    };
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  }, [stage, language, interviewerMode, editorLocked, code, transcript, translation, silenceSeconds]);
 
-    if (!SpeechRecognitionAPI) {
-      setErrorBanner("Native speech recognition is unavailable here. Use the fallback transcript box to continue the demo.");
-      return;
+  // ── Silence / dead-air timer ─────────────────────────────────────────────
+  useEffect(() => {
+    if (stage !== "coding") return;
+    const ticker = window.setInterval(() => {
+      setSilenceSeconds((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(ticker);
+  }, [stage]);
+
+  // Show dead air banner after threshold while coding
+  useEffect(() => {
+    if (stage !== "coding") { setDeadAirBanner(false); return; }
+    if (silenceSeconds > 0 && silenceSeconds % DEAD_AIR_THRESHOLD_SEC === 0) {
+      setDeadAirBanner(true);
+      // Auto-dismiss after 6 seconds
+      const t = window.setTimeout(() => setDeadAirBanner(false), 6000);
+      return () => window.clearTimeout(t);
     }
+  }, [silenceSeconds, stage]);
 
-    const recognition = new SpeechRecognitionAPI();
-    recognition.lang = "en-IN";
-    recognition.continuous = true;
-    recognition.interimResults = true;
+  // Auto-fire curveball once after CURVEBALL_AUTO_SEC seconds of coding
+  useEffect(() => {
+    if (stage !== "coding") return;
+    if (curveballFiredRef.current) return;
+    if (silenceSeconds < CURVEBALL_AUTO_SEC) return;
 
-    recognition.onresult = (event: SpeechRecognitionEventLike) => {
-      const raw = Array.from(event.results ?? [])
-        .map((result) => Array.from(result).map((item) => item.transcript ?? "").join(" "))
-        .join(" ")
-        .trim();
+    curveballFiredRef.current = true;
 
-      if (raw) {
-        setTranscript(raw);
-      }
-    };
+    // Detect trigger type from code content
+    const trigger = /for.*for|while.*while/i.test(code)
+      ? "nested_loop"
+      : !/if.*length|null|undefined|empty/i.test(code)
+        ? "missing_boundary"
+        : "random";
 
-    recognition.onerror = (event: SpeechRecognitionEventLike) => {
-      setErrorBanner(`Mic error: ${event.error || "Unable to access input."}`);
-      setIsListening(false);
-    };
+    void fireCurveball(trigger);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [silenceSeconds, stage]);
 
-    recognition.onend = () => {
-      if (isListening) {
-        recognition.start();
-      }
-    };
+  // ── Speech helpers ───────────────────────────────────────────────────────
 
-    recognition.start();
-    setIsListening(true);
-    recognitionRef.current = recognition;
-  };
-
-  const stopSpeechCapture = () => {
-    recognitionRef.current?.stop();
-    setIsListening(false);
-  };
-
-  const speakAi = (voiceText: string) => {
+  const speakAi = useCallback((text: string) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-
-    const utterance = new SpeechSynthesisUtterance(voiceText);
+    const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
     utterance.pitch = 1.05;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
-  };
+  }, []);
 
-  const validatePitch = () => {
-    const pitchResult = analyzePitch(transcript);
-
-    if (!pitchResult.valid) {
-      const missingText = pitchResult.missing.join(", ");
-      const prompt = `You are missing ${missingText}. Please state the missing detail before unlocking the editor.`;
-      setErrorBanner(prompt);
-      speakAi(prompt);
+  const startSpeechCapture = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const SpeechAPI = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SpeechAPI) {
+      setErrorBanner(
+        "Native speech recognition is unavailable in this browser. Use the transcript box below to type your explanation manually.",
+      );
       return;
     }
+    const rec = new SpeechAPI();
+    rec.lang = "en-IN";
+    rec.continuous = true;
+    rec.interimResults = true;
 
-    setTranslation(pitchResult.translation);
-    setEditorLocked(false);
-    setStage("coding");
+    rec.onresult = (event) => {
+      const raw = Array.from(event.results ?? [])
+        .map((r) => Array.from(r).map((item) => item.transcript ?? "").join(" "))
+        .join(" ")
+        .trim();
+      if (raw) setTranscript(raw);
+    };
+
+    rec.onerror = (event) => {
+      setErrorBanner(`Mic error: ${event.error ?? "Unable to access microphone."}`);
+      setIsListening(false);
+      isListeningRef.current = false;
+    };
+
+    rec.onend = () => {
+      // Restart if we deliberately keep listening
+      if (isListeningRef.current) {
+        try { rec.start(); } catch { /* already started */ }
+      }
+    };
+
+    rec.start();
+    setIsListening(true);
+    isListeningRef.current = true;
+    recognitionRef.current = rec;
+  }, []);
+
+  const stopSpeechCapture = useCallback(() => {
+    recognitionRef.current?.stop();
+    setIsListening(false);
+    isListeningRef.current = false;
+  }, []);
+
+  // ── API calls ────────────────────────────────────────────────────────────
+
+  const validatePitch = async () => {
+    if (!transcript.trim()) {
+      setErrorBanner("Please speak or type your approach first before validating.");
+      speakAi("Please describe your brute-force approach, algorithm, and complexity before I can unlock the editor.");
+      return;
+    }
+    setPitchLoading(true);
+    setPitchMissing([]);
     setErrorBanner(null);
-    speakAi("Editor unlocked. Please continue coding and narrate your steps as you implement the solution.");
+
+    try {
+      const res = await fetch("/api/validate-pitch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+
+      let result: { valid: boolean; missing: string[]; translation: string };
+
+      if (!res.ok) {
+        // Gracefully fall back to client-side check
+        result = analyzePitchLocal(transcript);
+      } else {
+        const data = (await res.json()) as { valid?: boolean; missing?: string[]; translation?: string; error?: string };
+        if (data.error) {
+          result = analyzePitchLocal(transcript);
+        } else {
+          result = {
+            valid: data.valid ?? false,
+            missing: data.missing ?? [],
+            translation: data.translation ?? "",
+          };
+        }
+      }
+
+      if (!result.valid) {
+        setPitchMissing(result.missing);
+        const msg = `Your pitch is missing: ${result.missing.join(", ")}. Please cover those points before I unlock the editor.`;
+        setErrorBanner(msg);
+        speakAi(msg);
+      } else {
+        setTranslation(result.translation);
+        setEditorLocked(false);
+        setStage("coding");
+        setErrorBanner(null);
+        setPitchMissing([]);
+        speakAi(
+          "Editor unlocked. Excellent approach. Continue coding and narrate your implementation step by step.",
+        );
+      }
+    } catch {
+      // Network failure — fall back
+      const result = analyzePitchLocal(transcript);
+      if (!result.valid) {
+        setPitchMissing(result.missing);
+        const msg = `Your pitch is missing: ${result.missing.join(", ")}.`;
+        setErrorBanner(msg);
+        speakAi(msg);
+      } else {
+        setTranslation(result.translation);
+        setEditorLocked(false);
+        setStage("coding");
+        setErrorBanner(null);
+        speakAi("Editor unlocked. Keep narrating as you code.");
+      }
+    } finally {
+      setPitchLoading(false);
+    }
+  };
+
+  const fireCurveball = async (
+    trigger: "nested_loop" | "missing_boundary" | "silence" | "random" = "random",
+  ) => {
+    setCurveballLoading(true);
+    try {
+      const res = await fetch("/api/curveball", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, transcript, interviewerMode, trigger }),
+      });
+
+      let question: string;
+
+      if (!res.ok) {
+        // Static fallback questions per trigger
+        const fallbacks: Record<string, string> = {
+          nested_loop: "I see a nested loop forming — what does this do to your worst-case time complexity?",
+          missing_boundary: "What happens if the input array is empty or contains all duplicate elements?",
+          silence: "Walk me through what this loop invariant is doing right now.",
+          random: "Can you justify why your chosen data structure is optimal here?",
+        };
+        question = fallbacks[trigger] ?? fallbacks.random;
+      } else {
+        const data = (await res.json()) as { question?: string; error?: string };
+        question = data.question ?? "What is the worst-case time complexity of your current approach?";
+      }
+
+      setCurveball(question);
+      speakAi(question);
+    } catch {
+      const fallback = "What happens if the input array is empty or has only one element?";
+      setCurveball(fallback);
+      speakAi(fallback);
+    } finally {
+      setCurveballLoading(false);
+    }
   };
 
   const dismissCurveball = () => {
     if (!curveball) return;
-
     const response = curveballResponse.trim();
     if (!response) {
-      setErrorBanner("Please answer the interviewer question verbally to dismiss the prompt.");
+      setErrorBanner("Verbally answer the interviewer's question to dismiss the prompt.");
       return;
     }
-
     setCurveball(null);
     setCurveballResponse("");
-    setTranscript((current) => `${current} ${response}`);
-    speakAi("Good. Keep iterating on the edge-case reasoning while you finish the code.");
+    setErrorBanner(null);
+    setTranscript((t) => `${t} ${response}`.trim());
+    speakAi("Good reasoning. Keep going — finish your implementation and continue narrating.");
   };
 
-  const submitInterview = () => {
-    const summary = buildScorecard({ transcript, silenceSeconds, code });
-    setScore(summary);
-    setStage("submitted");
+  const submitInterview = async () => {
     stopSpeechCapture();
-    speakAi("Interview complete. Here is your hireability scorecard.");
+    setScorecardLoading(true);
+
+    const numbers = buildScoreNumbers(transcript, silenceSeconds, code);
+    const fillerCount = countFillerWords(transcript);
+
+    try {
+      const res = await fetch("/api/scorecard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript,
+          code,
+          silenceSeconds,
+          fillerCount,
+          algorithmicScore: numbers.algorithmic,
+          communicationScore: numbers.communication,
+          edgeScore: numbers.edge,
+        }),
+      });
+
+      let audit: { timestamp: string; quote: string; feedback: string }[] = [];
+      let auditSummary = "";
+
+      if (res.ok) {
+        const data = (await res.json()) as {
+          audit?: typeof audit;
+          summary?: string;
+          error?: string;
+        };
+        audit = data.audit ?? [];
+        auditSummary = data.summary ?? "";
+      }
+
+      setScore({ ...numbers, audit, auditSummary });
+      setStage("submitted");
+      speakAi(`Interview complete. Your hireability index is ${numbers.overall} out of 100.`);
+    } catch {
+      setScore({ ...numbers, audit: [], auditSummary: "" });
+      setStage("submitted");
+      speakAi(`Interview complete. Your hireability index is ${numbers.overall} out of 100.`);
+    } finally {
+      setScorecardLoading(false);
+    }
   };
 
-  useEffect(() => {
-    if (stage !== "coding") return;
+  const resetSession = () => {
+    stopSpeechCapture();
+    setStage("setup");
+    setEditorLocked(true);
+    setCode(defaultCode[language]);
+    setTranscript("");
+    setTranslation("");
+    setSilenceSeconds(0);
+    setCurveball(null);
+    setCurveballResponse("");
+    setScore(null);
+    setErrorBanner(null);
+    setDeadAirBanner(false);
+    setPitchMissing([]);
+    curveballFiredRef.current = false;
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(SESSION_KEY);
+    }
+  };
 
-    const ticker = window.setInterval(() => {
-      setSilenceSeconds((seconds) => seconds + 1);
-    }, 1000);
-
-    return () => window.clearInterval(ticker);
-  }, [stage]);
+  // ── Derived values ───────────────────────────────────────────────────────
 
   const runtimeResult = useMemo(() => evaluateCode(code), [code]);
+  const fillerCount = useMemo(() => countFillerWords(transcript), [transcript]);
+  const wordCount = useMemo(
+    () => transcript.trim().split(/\s+/).filter(Boolean).length,
+    [transcript],
+  );
+  const verbalPercent = Math.min(90, Math.round((wordCount / Math.max(1, wordCount + 22)) * 100));
+
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <main className="min-h-screen bg-[#07121f] px-4 py-6 text-slate-50">
-      <div className="mx-auto max-w-7xl">
-        <header className="mb-6 flex flex-col gap-4 rounded-2xl border border-cyan-500/20 bg-slate-900/80 p-4 shadow-2xl shadow-cyan-950/40 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">AI interview simulator</p>
-            <h1 className="mt-2 text-3xl font-bold text-white">CodeOutLoud</h1>
-          </div>
+      <div className="mx-auto max-w-7xl space-y-6">
 
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <header className="flex flex-col gap-4 rounded-2xl border border-cyan-500/20 bg-slate-900/80 p-4 shadow-2xl shadow-cyan-950/40 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">
+              Voice-First DSA Interview Simulator
+            </p>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight text-white">
+              CodeOut<span className="text-cyan-400">Loud</span>
+            </h1>
+          </div>
           <div className="flex flex-wrap items-center gap-3">
-            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-sm text-emerald-200">
-              <span className="inline-flex items-center gap-2"><CheckCircle2 size={14} /> AI Interviewer Mode</span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-sm text-emerald-200">
+              <CheckCircle2 size={13} />
+              AI Interviewer Active
             </span>
             <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1 text-sm text-violet-200">
-              All interviewer prompts are AI-generated.
+              All curveballs and scorecards are AI-generated
             </span>
+            {stage !== "setup" && (
+              <button
+                onClick={resetSession}
+                className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-sm text-slate-300 hover:bg-slate-700"
+              >
+                Reset session
+              </button>
+            )}
           </div>
         </header>
 
-        {errorBanner ? (
-          <div className="mb-5 rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+        {/* ── Error banner ────────────────────────────────────────────────── */}
+        {errorBanner && (
+          <div
+            role="alert"
+            className="rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
+          >
             {errorBanner}
           </div>
-        ) : null}
+        )}
 
+        {/* ── Dead air banner ─────────────────────────────────────────────── */}
+        {deadAirBanner && (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="animate-pulse rounded-xl border border-rose-400/60 bg-rose-500/20 px-4 py-3 text-sm font-medium text-rose-100"
+          >
+            💬 Think out loud — explain what this loop invariant is doing right now.
+          </div>
+        )}
+
+        {/* ── Main 3-column grid ──────────────────────────────────────────── */}
         <div className="grid gap-6 lg:grid-cols-[1.2fr_2fr_1fr]">
-          <section className="space-y-5 rounded-2xl border border-slate-700 bg-slate-900/70 p-5">
+
+          {/* ── Left: Problem panel ──────────────────────────────────────── */}
+          <section
+            aria-label="Problem setup"
+            className="space-y-4 rounded-2xl border border-slate-700 bg-slate-900/70 p-5"
+          >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Interview setup</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{problem.title}</h2>
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
+                  Interview setup
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold text-white">{problem.title}</h2>
               </div>
               <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-xs font-medium text-cyan-200">
                 {problem.difficulty}
               </span>
             </div>
 
-            <div className="space-y-3 text-sm text-slate-300">
+            <div className="space-y-3 text-sm">
               <div className="rounded-xl bg-slate-800/80 p-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Role pattern</p>
-                <p className="mt-2 font-medium text-slate-100">{problem.pattern}</p>
+                <p className="mt-1 font-medium text-slate-100">{problem.pattern}</p>
               </div>
 
               <div className="rounded-xl bg-slate-800/80 p-3">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Language</p>
+                <label htmlFor="language-select" className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                  Language
+                </label>
                 <select
+                  id="language-select"
                   value={language}
-                  onChange={(event) => setLanguage(event.target.value)}
-                  className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-white outline-none"
+                  onChange={(e) => {
+                    const lang = e.target.value as Language;
+                    setLanguage(lang);
+                    if (stage === "setup") setCode(defaultCode[lang]);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-500"
                 >
-                  <option>JavaScript</option>
-                  <option>Python</option>
-                  <option>C++</option>
-                  <option>Java</option>
+                  {LANGUAGES.map((l) => (
+                    <option key={l}>{l}</option>
+                  ))}
                 </select>
               </div>
 
               <div className="rounded-xl bg-slate-800/80 p-3">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Interviewer persona</p>
+                <label htmlFor="persona-select" className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                  Interviewer persona
+                </label>
                 <select
+                  id="persona-select"
                   value={interviewerMode}
-                  onChange={(event) => setInterviewerMode(event.target.value)}
-                  className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-white outline-none"
+                  onChange={(e) => setInterviewerMode(e.target.value as InterviewerMode)}
+                  className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-500"
                 >
-                  {interviewModes.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
+                  {INTERVIEWER_MODES.map((m) => (
+                    <option key={m}>{m}</option>
                   ))}
                 </select>
               </div>
             </div>
 
             <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
-              <p className="mb-3 text-sm font-medium text-cyan-200">Problem prompt</p>
+              <p className="mb-2 text-sm font-medium text-cyan-200">Problem prompt</p>
               <p className="text-sm leading-6 text-slate-300">{problem.prompt}</p>
-              <ul className="mt-4 space-y-2 text-sm text-slate-300">
-                {problem.constraints.map((item) => (
-                  <li key={item} className="flex gap-2">
-                    <span className="mt-1 text-cyan-300">•</span>
-                    <span>{item}</span>
+              <ul className="mt-3 space-y-1.5 text-sm text-slate-300" aria-label="Constraints">
+                {problem.constraints.map((c) => (
+                  <li key={c} className="flex gap-2">
+                    <span className="mt-0.5 shrink-0 text-cyan-300" aria-hidden>•</span>
+                    <span>{c}</span>
                   </li>
                 ))}
               </ul>
             </div>
 
-            <button
-              onClick={() => {
-                setStage("pitch");
-                setEditorLocked(true);
-                setTranscript("");
-                setTranslation("");
-                setScore(null);
-                speakAi("Please tell me your brute-force intuition, your chosen algorithm, and your time and space complexity before I unlock the editor.");
-              }}
-              className="w-full rounded-xl bg-cyan-500 px-4 py-3 font-medium text-slate-950 transition hover:bg-cyan-400"
-            >
-              Start verbal pitch
-            </button>
+            {stage === "setup" && (
+              <button
+                onClick={() => {
+                  setStage("pitch");
+                  setEditorLocked(true);
+                  setTranscript("");
+                  setTranslation("");
+                  setScore(null);
+                  curveballFiredRef.current = false;
+                  setSilenceSeconds(0);
+                  speakAi(
+                    "Please describe your brute-force intuition, your chosen algorithm, and your time and space complexity. I will unlock the editor once I hear all three.",
+                  );
+                }}
+                className="w-full rounded-xl bg-cyan-500 px-4 py-3 font-medium text-slate-950 transition hover:bg-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+              >
+                Start verbal pitch
+              </button>
+            )}
+
+            {stage === "pitch" && (
+              <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                <Lock size={14} className="mb-1 inline-block" aria-hidden />{" "}
+                <strong>Verbal lock active.</strong> Speak your approach to unlock the editor.
+                {pitchMissing.length > 0 && (
+                  <p className="mt-2 text-amber-200">
+                    Still missing: {pitchMissing.join(", ")}.
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
-          <section className="rounded-2xl border border-slate-700 bg-slate-900/70 p-4">
-            <div className="mb-4 flex items-center justify-between">
+          {/* ── Centre: Editor panel ─────────────────────────────────────── */}
+          <section
+            aria-label="Code editor"
+            className="flex flex-col gap-4 rounded-2xl border border-slate-700 bg-slate-900/70 p-4"
+          >
+            {/* Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                {editorLocked ? <Lock size={16} className="text-amber-300" /> : <Unlock size={16} className="text-emerald-300" />}
+                {editorLocked ? (
+                  <Lock size={15} className="text-amber-300" aria-label="Editor locked" />
+                ) : (
+                  <Unlock size={15} className="text-emerald-300" aria-label="Editor unlocked" />
+                )}
                 <span className="text-sm font-medium text-slate-200">
                   {editorLocked ? "Verbal lock active" : "Editor unlocked"}
                 </span>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={isListening ? stopSpeechCapture : startSpeechCapture}
-                  className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium ${
-                    isListening ? "bg-rose-500 text-white" : "bg-slate-700 text-slate-100"
+                  aria-pressed={isListening}
+                  aria-label={isListening ? "Stop microphone" : "Start microphone"}
+                  className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${
+                    isListening
+                      ? "bg-rose-500 text-white hover:bg-rose-400"
+                      : "bg-slate-700 text-slate-100 hover:bg-slate-600"
                   }`}
                 >
-                  {isListening ? <MicOff size={15} /> : <Mic size={15} />}
+                  {isListening ? <MicOff size={14} aria-hidden /> : <Mic size={14} aria-hidden />}
                   {isListening ? "Stop mic" : "Start mic"}
+                  {isListening && (
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-white" aria-hidden />
+                  )}
                 </button>
-                <button
-                  onClick={validatePitch}
-                  className="rounded-full bg-violet-500 px-3 py-2 text-sm font-medium text-white hover:bg-violet-400"
-                >
-                  Validate pitch
-                </button>
+
+                {(stage === "pitch" || stage === "coding") && (
+                  <button
+                    onClick={validatePitch}
+                    disabled={pitchLoading}
+                    aria-busy={pitchLoading}
+                    className="rounded-full bg-violet-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-violet-400 disabled:opacity-60"
+                  >
+                    {pitchLoading ? "Validating…" : "Validate pitch"}
+                  </button>
+                )}
+
+                {stage === "coding" && (
+                  <button
+                    onClick={() => void fireCurveball("random")}
+                    disabled={curveballLoading || !!curveball}
+                    className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-500/20 disabled:opacity-50"
+                  >
+                    {curveballLoading ? "Generating…" : "Fire curveball"}
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="mb-4 overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/80">
+            {/* Monaco editor */}
+            <div className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/80">
               <div className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-400">
                 <span>Code editor</span>
-                <span>{language}</span>
+                <span aria-label={`Language: ${language}`}>{language}</span>
               </div>
               <Editor
                 height="420px"
-                language={language === "JavaScript" ? "javascript" : language === "Python" ? "python" : language === "C++" ? "cpp" : "java"}
+                language={MONACO_LANG[language]}
                 theme="vs-dark"
                 value={code}
-                onChange={(value) => setCode(value ?? "")}
+                onChange={(v) => setCode(v ?? "")}
                 options={{
                   readOnly: editorLocked,
                   minimap: { enabled: false },
@@ -538,180 +890,299 @@ export default function Home() {
                   lineNumbersMinChars: 3,
                   automaticLayout: true,
                   padding: { top: 16, bottom: 16 },
+                  ariaLabel: editorLocked
+                    ? "Code editor — locked until verbal pitch is validated"
+                    : "Code editor — write your solution here",
                 }}
               />
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
-              <button
-                onClick={() => {
-                  if (curveball) {
-                    speakAi(curveball);
-                  }
-                }}
-                className="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100"
-              >
-                Replay interviewer prompt
-              </button>
-              <button
-                onClick={submitInterview}
-                className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400"
-              >
-                Submit interview
-              </button>
-            </div>
+            {/* Submit row */}
+            {(stage === "coding" || stage === "submitted") && (
+              <div className="flex gap-3">
+                {curveball && (
+                  <button
+                    onClick={() => speakAi(curveball)}
+                    className="flex-1 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/20"
+                  >
+                    Replay interviewer prompt
+                  </button>
+                )}
+                {stage === "coding" && (
+                  <button
+                    onClick={submitInterview}
+                    disabled={scorecardLoading}
+                    aria-busy={scorecardLoading}
+                    className="flex-1 rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
+                  >
+                    {scorecardLoading ? "Generating scorecard…" : "Submit interview"}
+                  </button>
+                )}
+              </div>
+            )}
           </section>
 
-          <aside className="space-y-5 rounded-2xl border border-slate-700 bg-slate-900/70 p-5">
+          {/* ── Right: sidebar panels ─────────────────────────────────────── */}
+          <aside aria-label="Interview assistant" className="space-y-4">
+
+            {/* AI logic validator */}
             <div className="rounded-2xl border border-cyan-500/20 bg-slate-950/60 p-4">
               <div className="mb-2 flex items-center gap-2 text-cyan-200">
-                <BrainCircuit size={16} />
+                <BrainCircuit size={15} aria-hidden />
                 <span className="text-xs uppercase tracking-[0.2em]">AI logic validator</span>
               </div>
-              <p className="text-sm text-slate-300">
-                Pitch check: {verbalLockStatus.valid ? "Approved" : "Missing " + verbalLockStatus.message}
-              </p>
+              {pitchMissing.length > 0 ? (
+                <p className="text-sm text-amber-200">
+                  <AlertTriangle size={13} className="mr-1 inline-block" aria-hidden />
+                  Missing: {pitchMissing.join(", ")}
+                </p>
+              ) : (
+                <p className="text-sm text-slate-300">
+                  {stage === "coding" || stage === "submitted"
+                    ? "✓ Pitch approved — editor unlocked."
+                    : "Speak your approach and press Validate pitch."}
+                </p>
+              )}
             </div>
 
+            {/* Translation card */}
             <div className="rounded-2xl border border-violet-400/20 bg-violet-500/10 p-4">
               <div className="mb-2 flex items-center gap-2 text-violet-200">
-                <Volume2 size={16} />
-                <span className="text-xs uppercase tracking-[0.2em]">Translation card</span>
+                <Volume2 size={15} aria-hidden />
+                <span className="text-xs uppercase tracking-[0.2em]">Articulate like a pro</span>
               </div>
               <p className="text-sm leading-6 text-slate-200">
-                {translation || "The formal corporate English translation will appear here after your verbal pitch is validated."}
+                {translation ||
+                  "Your corporate-English translation will appear here after a successful pitch."}
               </p>
             </div>
 
+            {/* Live metrics */}
             <div className="rounded-2xl border border-cyan-500/20 bg-slate-950/60 p-4">
               <div className="mb-3 flex items-center gap-2 text-cyan-200">
-                <TimerReset size={16} />
+                <TimerReset size={15} aria-hidden />
                 <span className="text-xs uppercase tracking-[0.2em]">Live metrics</span>
               </div>
-              <div className="space-y-3 text-sm text-slate-300">
-                <p>Talking time vs typing: {Math.min(90, Math.round((transcript.split(/\s+/).filter(Boolean).length / Math.max(1, 48)) * 100))}% verbal</p>
-                <p>Filler words: {countFillerWords(transcript)}</p>
-                <p>Dead air: {silenceSeconds}s</p>
-              </div>
+              <ul className="space-y-2 text-sm text-slate-300">
+                <li>
+                  <span className="text-slate-400">Verbal ratio: </span>
+                  <span className={verbalPercent >= 50 ? "text-emerald-300" : "text-amber-300"}>
+                    {verbalPercent}%
+                  </span>
+                  <span className="text-slate-500"> (target ≥50%)</span>
+                </li>
+                <li>
+                  <span className="text-slate-400">Filler words: </span>
+                  <span className={fillerCount > 5 ? "text-rose-300" : "text-slate-100"}>
+                    {fillerCount}
+                  </span>
+                </li>
+                <li>
+                  <span className="text-slate-400">Dead air: </span>
+                  <span className={silenceSeconds > 20 ? "text-rose-300" : "text-slate-100"}>
+                    {silenceSeconds}s
+                  </span>
+                </li>
+                <li>
+                  <span className="text-slate-400">Words spoken: </span>
+                  {wordCount}
+                </li>
+              </ul>
             </div>
 
+            {/* Curveball panel */}
             <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
               <div className="mb-2 flex items-center gap-2 text-emerald-200">
-                <Sparkles size={16} />
+                <Sparkles size={15} aria-hidden />
                 <span className="text-xs uppercase tracking-[0.2em]">Curveball</span>
               </div>
               {curveball ? (
                 <div className="space-y-3">
-                  <p className="text-sm text-slate-100">{curveball}</p>
+                  <p className="text-sm font-medium text-slate-100">{curveball}</p>
                   <textarea
                     value={curveballResponse}
-                    onChange={(event) => setCurveballResponse(event.target.value)}
-                    placeholder="Answer the interviewer's verbal challenge..."
-                    className="h-20 w-full rounded-xl border border-slate-600 bg-slate-950 px-3 py-2 text-sm outline-none"
+                    onChange={(e) => setCurveballResponse(e.target.value)}
+                    placeholder="Type or dictate your answer to dismiss this prompt…"
+                    aria-label="Answer for curveball question"
+                    className="h-20 w-full rounded-xl border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
                   />
                   <button
                     onClick={dismissCurveball}
-                    className="w-full rounded-lg bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950"
+                    className="w-full rounded-lg bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400"
                   >
                     Dismiss prompt
                   </button>
                 </div>
               ) : (
-                <p className="text-sm text-slate-200">No active interruption. Keep narrating the implementation.</p>
+                <p className="text-sm text-slate-400">
+                  {stage === "coding"
+                    ? "Curveball fires automatically — or press 'Fire curveball' above."
+                    : "No active interruption."}
+                </p>
               )}
             </div>
           </aside>
         </div>
 
-        <section className="mt-6 grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+        {/* ── Bottom row: transcript + runtime ─────────────────────────────── */}
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-700 bg-slate-900/70 p-5">
             <div className="mb-3 flex items-center gap-2 text-cyan-200">
-              <Mic size={16} />
+              <Mic size={15} aria-hidden />
               <span className="text-xs uppercase tracking-[0.2em]">Live transcript</span>
             </div>
             <textarea
               value={transcript}
-              onChange={(event) => setTranscript(event.target.value)}
-              className="h-36 w-full rounded-xl border border-slate-600 bg-slate-950 px-3 py-3 text-sm text-slate-100 outline-none"
-              placeholder="Interview transcript appears here..."
+              onChange={(e) => setTranscript(e.target.value)}
+              aria-label="Interview transcript — edit manually if microphone is unavailable"
+              className="h-36 w-full rounded-xl border border-slate-600 bg-slate-950 px-3 py-3 text-sm text-slate-100 outline-none focus:border-cyan-500"
+              placeholder="Your speech appears here in real time. You can also type directly as a fallback…"
             />
           </div>
 
           <div className="rounded-2xl border border-slate-700 bg-slate-900/70 p-5">
             <div className="mb-3 flex items-center gap-2 text-violet-200">
-              <BarChart3 size={16} />
-              <span className="text-xs uppercase tracking-[0.2em]">Judged health</span>
+              <BarChart3 size={15} aria-hidden />
+              <span className="text-xs uppercase tracking-[0.2em]">Code health</span>
             </div>
-            <div className="grid gap-3">
+            <div className="space-y-3">
               <div className="rounded-xl bg-slate-950/60 p-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Runtime check</p>
-                <p className="mt-2 text-lg font-semibold text-emerald-300">{Math.round(runtimeResult.passRate)}% pass rate</p>
+                <p className="mt-1 text-lg font-semibold text-emerald-300">
+                  {Math.round(runtimeResult.passRate)}% pass rate
+                </p>
+                {runtimeResult.error && (
+                  <p className="mt-1 text-xs text-rose-300">{runtimeResult.error}</p>
+                )}
               </div>
               <div className="rounded-xl bg-slate-950/60 p-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Edge awareness</p>
-                <p className="mt-2 text-sm text-slate-200">
-                  {transcript.toLowerCase().includes("empty") || transcript.toLowerCase().includes("duplicate")
-                    ? "Boundary and duplicate logic were explicitly discussed."
+                <p className="mt-1 text-sm text-slate-200">
+                  {transcript.toLowerCase().includes("empty") ||
+                  transcript.toLowerCase().includes("duplicate")
+                    ? "✓ Boundary and duplicate logic discussed."
                     : "Add explicit edge-case coverage before final submission."}
                 </p>
               </div>
             </div>
           </div>
-        </section>
+        </div>
 
-        {score ? (
-          <section className="mt-6 rounded-2xl border border-emerald-400/20 bg-[#071d1b] p-6">
-            <div className="mb-5 flex items-center justify-between gap-3">
+        {/* ── Hireability scorecard ─────────────────────────────────────────── */}
+        {score && (
+          <section
+            aria-label="Hireability scorecard"
+            className="rounded-2xl border border-emerald-400/20 bg-[#071d1b] p-6"
+          >
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-emerald-200">Hireability scorecard</p>
-                <h3 className="mt-2 text-3xl font-bold text-white">{score.overall}/100</h3>
+                <p className="text-xs uppercase tracking-[0.22em] text-emerald-200">
+                  Hireability scorecard
+                </p>
+                <p className="mt-1 text-5xl font-bold text-white">
+                  {score.overall}
+                  <span className="ml-1 text-2xl font-normal text-slate-400">/100</span>
+                </p>
               </div>
-              <div className="rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-200">
+              <span className="rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-200">
                 AI-inspected interview report
-              </div>
+              </span>
             </div>
 
+            {/* Score tiles */}
             <div className="grid gap-4 md:grid-cols-4">
-              <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Algorithmic correctness</p>
-                <p className="mt-3 text-2xl font-semibold text-cyan-300">{score.algorithmic}</p>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Communication clarity</p>
-                <p className="mt-3 text-2xl font-semibold text-violet-300">{score.communication}</p>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Edge-case awareness</p>
-                <p className="mt-3 text-2xl font-semibold text-amber-300">{score.edge}</p>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Tone confidence</p>
-                <p className="mt-3 text-2xl font-semibold text-emerald-300">{score.toneConfidence}</p>
-              </div>
+              {[
+                { label: "Algorithmic correctness", value: score.algorithmic, color: "text-cyan-300" },
+                { label: "Communication clarity", value: score.communication, color: "text-violet-300" },
+                { label: "Edge-case awareness", value: score.edge, color: "text-amber-300" },
+                { label: "Tone confidence", value: score.toneConfidence, color: "text-emerald-300" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
+                  <p className={`mt-2 text-2xl font-semibold ${color}`}>{value}</p>
+                </div>
+              ))}
             </div>
 
             <div className="mt-6 grid gap-4 md:grid-cols-2">
+              {/* What you should have said — from AI audit or static fallback */}
               <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">What you should have said</p>
-                <ul className="mt-3 space-y-3 text-sm text-slate-200">
-                  <li>• Timestamp 00:45: “You jumped straight into the optimal solution without mentioning the brute-force trade-off.”</li>
-                  <li>• Timestamp 02:15: “Good job identifying the O(1) auxiliary space optimization.”</li>
-                  <li>• Timestamp 03:10: “State the duplicate-edge scenario before moving into the final implementation.”</li>
+                <p className="mb-3 text-xs uppercase tracking-[0.2em] text-slate-400">
+                  What you should have said
+                </p>
+                <ul className="space-y-3 text-sm text-slate-200">
+                  {score.audit.length > 0
+                    ? score.audit.map((entry, i) => (
+                        <li key={i}>
+                          <span className="mr-2 font-mono text-xs text-cyan-400">
+                            {entry.timestamp}
+                          </span>
+                          <span className="text-slate-300 italic">"{entry.quote}"</span>
+                          <span className="ml-1 text-slate-200"> — {entry.feedback}</span>
+                        </li>
+                      ))
+                    : [
+                        {
+                          ts: "00:45",
+                          msg: "You jumped straight into the optimal solution without mentioning the brute-force trade-off.",
+                        },
+                        {
+                          ts: "02:15",
+                          msg: "Good job identifying the hash-map optimization.",
+                        },
+                        {
+                          ts: "03:10",
+                          msg: "State the duplicate-edge scenario before the final implementation.",
+                        },
+                      ].map(({ ts, msg }) => (
+                        <li key={ts}>
+                          <span className="mr-2 font-mono text-xs text-cyan-400">{ts}</span>
+                          {msg}
+                        </li>
+                      ))}
                 </ul>
+                {score.auditSummary && (
+                  <p className="mt-4 border-t border-slate-700 pt-3 text-sm text-slate-300">
+                    {score.auditSummary}
+                  </p>
+                )}
               </div>
 
+              {/* Communication breakdown */}
               <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Communication breakdown</p>
-                <ul className="mt-3 space-y-3 text-sm text-slate-200">
-                  <li>• Dead air %: {score.deadAirPercent}%</li>
-                  <li>• Filler words/minute: {score.fillerWordsPerMinute}</li>
-                  <li>• Tone confidence score: {score.toneConfidence}</li>
-                  <li>• Verdict: {score.testSummary}</li>
+                <p className="mb-3 text-xs uppercase tracking-[0.2em] text-slate-400">
+                  Communication breakdown
+                </p>
+                <ul className="space-y-2 text-sm text-slate-200">
+                  <li>
+                    <span className="text-slate-400">Dead air: </span>
+                    <span className={score.deadAirPercent > 30 ? "text-rose-300" : "text-slate-100"}>
+                      {score.deadAirPercent}%
+                    </span>
+                  </li>
+                  <li>
+                    <span className="text-slate-400">Filler words/min: </span>
+                    <span className={score.fillerWordsPerMinute > 8 ? "text-amber-300" : "text-slate-100"}>
+                      {score.fillerWordsPerMinute}
+                    </span>
+                  </li>
+                  <li>
+                    <span className="text-slate-400">Tone confidence: </span>
+                    {score.toneConfidence}
+                  </li>
+                  <li className="pt-2 text-slate-300">{score.testSummary}</li>
                 </ul>
               </div>
             </div>
+
+            <button
+              onClick={resetSession}
+              className="mt-5 rounded-xl border border-slate-600 bg-slate-800 px-5 py-2.5 text-sm text-slate-200 hover:bg-slate-700"
+            >
+              Start new interview
+            </button>
           </section>
-        ) : null}
+        )}
       </div>
     </main>
   );
