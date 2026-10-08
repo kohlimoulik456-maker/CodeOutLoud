@@ -24,6 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { MouseEvent } from "react";
 import { signOut } from "../app/actions/auth";
 import UpgradeToProModal from "../components/UpgradeToProModal";
 import PrepCoach from "../components/coach/PrepCoach";
@@ -39,6 +40,16 @@ export type { SessionRecord } from "../utils/session-history";
 
 function formatDate(value: string) {
   return value.slice(0, 10);
+}
+
+function scrollToProgress(event: MouseEvent<HTMLAnchorElement>) {
+  event.preventDefault();
+  window.history.replaceState(null, "", "#progress");
+  window.setTimeout(() => {
+    document
+      .getElementById("progress")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
 }
 
 function TrendChart({ sessions }: { sessions: SessionRecord[] }) {
@@ -152,18 +163,18 @@ export default function Dashboard({
     syncLocalSessions();
     window.addEventListener("storage", syncLocalSessions);
     window.addEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
-    let progressFrame = 0;
+    let progressTimeout = 0;
     if (window.location.hash === "#progress") {
-      progressFrame = window.requestAnimationFrame(() => {
+      progressTimeout = window.setTimeout(() => {
         document
           .getElementById("progress")
           ?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+      }, 100);
     }
     return () => {
       window.removeEventListener("storage", syncLocalSessions);
       window.removeEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
-      if (progressFrame) window.cancelAnimationFrame(progressFrame);
+      if (progressTimeout) window.clearTimeout(progressTimeout);
     };
   }, []);
 
@@ -259,11 +270,7 @@ export default function Dashboard({
           </Link>
           <Link
             href="#progress"
-            onClick={() =>
-              document
-                .getElementById("progress")
-                ?.scrollIntoView({ behavior: "smooth", block: "start" })
-            }
+            onClick={scrollToProgress}
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-stone-400 transition hover:bg-white/5 hover:text-white"
           >
             <BarChart3 size={17} />
@@ -355,11 +362,7 @@ export default function Dashboard({
           </Link>
           <Link
             href="#progress"
-            onClick={() =>
-              document
-                .getElementById("progress")
-                ?.scrollIntoView({ behavior: "smooth", block: "start" })
-            }
+            onClick={scrollToProgress}
             className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white"
           >
             Progress
