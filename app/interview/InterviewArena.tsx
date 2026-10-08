@@ -14,6 +14,7 @@ import {
   TimerReset,
   Unlock,
   Volume2,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -771,6 +772,12 @@ export default function InterviewArena({
     curveballFiredRef.current = false;
   };
 
+  const closeInterview = () => {
+    stopSpeechCapture();
+    window.speechSynthesis?.cancel();
+    onChooseAnotherProblem();
+  };
+
   // ── Derived values ───────────────────────────────────────────────────────
 
   const runtimeResult = useMemo(
@@ -839,6 +846,15 @@ export default function InterviewArena({
               className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1 text-sm text-stone-600 hover:bg-[#eee9dc]"
             >
               Choose another problem
+            </button>
+            <button
+              type="button"
+              onClick={closeInterview}
+              aria-label="Close interview and return to problem selection"
+              title="Close interview"
+              className="inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-[#f7f6f3] text-stone-600 transition hover:bg-[#eee9dc] hover:text-stone-900"
+            >
+              <X size={16} aria-hidden />
             </button>
           </div>
         </header>
