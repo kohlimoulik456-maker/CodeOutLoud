@@ -1,16 +1,37 @@
 "use client";
 
-import { Check, Sparkles, X } from "lucide-react";
+import { LockKeyhole, Sparkles, X } from "lucide-react";
 
 type UpgradeToProModalProps = {
   open: boolean;
   onClose: () => void;
 };
 
-const benefits = [
-  "Unlimited mock interviews",
-  "System design and theory practice",
-  "Deeper communication insights",
+const proFeatures = [
+  {
+    name: "AI interviewer voice packs",
+    description: "Choose from different interviewer voices and personas.",
+  },
+  {
+    name: "Master Interview",
+    description: "Full-length, multi-round interview simulations.",
+  },
+  {
+    name: "System Design practice",
+    description: "Architecture prompts with structured AI feedback.",
+  },
+  {
+    name: "CS theory interview pack",
+    description: "Practice OS, networking, and object-oriented design.",
+  },
+  {
+    name: "Unlimited mock interviews",
+    description: "Practice as often as you need, without session limits.",
+  },
+  {
+    name: "Advanced performance insights",
+    description: "Deeper communication analytics and interview history.",
+  },
 ];
 
 export default function UpgradeToProModal({
@@ -30,7 +51,7 @@ export default function UpgradeToProModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="upgrade-title"
-        className="relative w-full max-w-md overflow-hidden rounded-3xl border border-[#d7c49a] bg-[#faf9f6] p-7 shadow-2xl"
+        className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-[#d7c49a] bg-[#faf9f6] p-7 shadow-2xl"
       >
         <button
           type="button"
@@ -53,28 +74,40 @@ export default function UpgradeToProModal({
           More practice. More clarity.
         </h2>
         <p className="mt-2 text-sm leading-6 text-stone-500">
-          Pro features are being prepared. Your current voice-first DSA practice
-          stays free.
+          Unlock these premium tools when you upgrade. Your current voice-first
+          DSA practice stays free.
         </p>
-        <ul className="mt-5 space-y-3">
-          {benefits.map((benefit) => (
-            <li key={benefit} className="flex items-center gap-2.5 text-sm">
-              <span className="grid size-5 place-items-center rounded-full bg-[#e8dfcb] text-[#725a2f]">
-                <Check size={12} />
-              </span>
-              {benefit}
+        <ul aria-label="Locked Pro features" className="mt-5 grid gap-2 sm:grid-cols-2">
+          {proFeatures.map((feature) => (
+            <li
+              key={feature.name}
+              aria-label={`${feature.name}, locked until Pro is available`}
+              className="rounded-xl border border-stone-200 bg-white/80 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-semibold text-stone-800">
+                  {feature.name}
+                </span>
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eee9dc] px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-[#725a2f]">
+                  <LockKeyhole size={10} aria-hidden />
+                  Locked
+                </span>
+              </div>
+              <p className="mt-1.5 text-xs leading-5 text-stone-500">
+                {feature.description}
+              </p>
             </li>
           ))}
         </ul>
         <div className="mt-7 rounded-xl border border-dashed border-[#c8a45c]/60 bg-[#f5f0e4] px-4 py-3 text-center text-xs text-[#725a2f]">
-          Early access pricing will be announced soon.
+          Pro features remain locked. Pricing and upgrades will be announced soon.
         </div>
         <button
           type="button"
           onClick={onClose}
           className="mt-4 w-full rounded-xl bg-[#1d1d19] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#33322d]"
         >
-          Sounds good
+          Got it
         </button>
       </section>
     </div>
