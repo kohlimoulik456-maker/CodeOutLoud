@@ -287,14 +287,20 @@ export default function Dashboard({
               <span className="hidden max-w-[130px] truncate text-xs text-stone-600 sm:block">
                 {userEmail}
               </span>
-              <form action={signOut}>
-                <button
-                  type="submit"
-                  className="rounded-full px-2 py-1 text-[11px] font-medium text-stone-500 hover:bg-stone-100 hover:text-stone-900"
-                >
-                  Sign out
-                </button>
-              </form>
+              {userEmail === "Guest" ? (
+                <span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500">
+                  Preview
+                </span>
+              ) : (
+                <form action={signOut}>
+                  <button
+                    type="submit"
+                    className="rounded-full px-2 py-1 text-[11px] font-medium text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              )}
             </div>
           </div>
         </header>

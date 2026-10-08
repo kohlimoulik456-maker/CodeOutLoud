@@ -88,8 +88,8 @@ Five in-depth interviews were conducted with students from B.Tech CS, ECE, and M
 
 ## Product surfaces
 
-- `/login` — email/password sign-in and account creation.
-- `/` — protected progress dashboard backed by the signed-in user's Supabase records.
+- `/` — public progress dashboard; shows Supabase history when a valid signed-in session is available, otherwise preview mode.
+- `/login` — temporarily redirects to the dashboard while account sign-in is on hold.
 - `/interview` — protected voice-first DSA interview arena.
 - `/master-interview` — protected locked Pro-feature preview.
 
@@ -128,7 +128,7 @@ npm run dev
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-Supabase project credentials and the SQL schema are required for sign-in and protected routes. The app works without a Groq key — pitch validation falls back to a client-side heuristic and the scorecard skips the AI audit trail.
+Supabase project credentials and the SQL schema are required for sign-in and interview routes. The dashboard remains available in preview mode without a valid Supabase session. The app works without a Groq key — pitch validation falls back to a client-side heuristic and the scorecard skips the AI audit trail.
 
 ---
 
