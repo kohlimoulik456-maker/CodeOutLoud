@@ -15,7 +15,17 @@ import {
   Unlock,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { SetStateAction } from "react";
+import UpgradeToProModal from "../../components/UpgradeToProModal";
+import { saveGuestSession, type SessionRecord } from "../../utils/session-history";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -187,12 +197,15 @@ function evaluateCode(code: string): {
     { nums: [2, 7, 11, 15], target: 9, expected: [0, 1] },
     { nums: [3, 2, 4], target: 6, expected: [1, 2] },
     { nums: [3, 3], target: 6, expected: [0, 1] },
-    { nums: [1, 2, 3, 4, 5], target: 10, expected: [3, 4] },
+    { nums: [1, 2, 3, 4, 6], target: 10, expected: [3, 4] },
   ];
   try {
-    // Only run for JS — other languages can't be eval'd in browser
     if (!code.includes("function twoSum") && !code.includes("const twoSum")) {
-      return { passRate: 100, passed: true };
+      return {
+        passRate: 0,
+        passed: false,
+        error: "In-browser test checks currently support the JavaScript Two Sum solution only.",
+      };
     }
     const runner = new Function("nums", "target", `${code}; return twoSum(nums, target);`);
     const results = tests.map(({ nums, target, expected }) => {
@@ -266,6 +279,7 @@ function buildScoreNumbers(
 // ─── Session persistence ──────────────────────────────────────────────────────
 
 const SESSION_KEY = "codeoutloud-session-v2";
+const SESSION_UPDATED_EVENT = "codeoutloud:arena-session";
 
 type PersistedSession = {
   stage: Stage;
@@ -278,8 +292,8 @@ type PersistedSession = {
   silenceSeconds: number;
 };
 
-function loadSession(): PersistedSession {
-  const fallback: PersistedSession = {
+function freshSession(): PersistedSession {
+  return {
     stage: "setup",
     language: "JavaScript",
     interviewerMode: "FAANG Bar Raiser",
@@ -289,6 +303,10 @@ function loadSession(): PersistedSession {
     translation: "",
     silenceSeconds: 0,
   };
+}
+
+function loadSession(): PersistedSession {
+  const fallback = freshSession();
   if (typeof window === "undefined") return fallback;
   try {
     const raw = window.localStorage.getItem(SESSION_KEY);
@@ -299,21 +317,81 @@ function loadSession(): PersistedSession {
   }
 }
 
+const FRESH_SESSION_JSON = JSON.stringify(freshSession());
+
+function getSessionSnapshot() {
+  return typeof window === "undefined"
+    ? FRESH_SESSION_JSON
+    : window.localStorage.getItem(SESSION_KEY) ?? FRESH_SESSION_JSON;
+}
+
+function getServerSessionSnapshot() {
+  return FRESH_SESSION_JSON;
+}
+
+function subscribeToSession(callback: () => void) {
+  window.addEventListener(SESSION_UPDATED_EVENT, callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener(SESSION_UPDATED_EVENT, callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+function writeSessionSnapshot(session: PersistedSession) {
+  window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+}
+
+function updateSessionField<K extends keyof PersistedSession>(
+  key: K,
+  value: SetStateAction<PersistedSession[K]>,
+) {
+  const current = loadSession();
+  const nextValue =
+    typeof value === "function"
+      ? (value as (previous: PersistedSession[K]) => PersistedSession[K])(
+          current[key],
+        )
+      : value;
+  writeSessionSnapshot({ ...current, [key]: nextValue });
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const initial = loadSession();
-
-  const [stage, setStage] = useState<Stage>(initial.stage);
-  const [language, setLanguage] = useState<Language>(initial.language);
-  const [interviewerMode, setInterviewerMode] = useState<InterviewerMode>(
-    initial.interviewerMode,
-  );
-  const [editorLocked, setEditorLocked] = useState(initial.editorLocked);
-  const [code, setCode] = useState(initial.code);
-  const [transcript, setTranscript] = useState(initial.transcript);
-  const [translation, setTranslation] = useState(initial.translation);
-  const [silenceSeconds, setSilenceSeconds] = useState(initial.silenceSeconds);
+  const initial = JSON.parse(
+    useSyncExternalStore(
+      subscribeToSession,
+      getSessionSnapshot,
+      getServerSessionSnapshot,
+    ),
+  ) as PersistedSession;
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const stage = initial.stage;
+  const language = initial.language;
+  const interviewerMode = initial.interviewerMode;
+  const editorLocked = initial.editorLocked;
+  const code = initial.code;
+  const transcript = initial.transcript;
+  const translation = initial.translation;
+  const silenceSeconds = initial.silenceSeconds;
+  const setStage = (value: SetStateAction<Stage>) =>
+    updateSessionField("stage", value);
+  const setLanguage = (value: SetStateAction<Language>) =>
+    updateSessionField("language", value);
+  const setInterviewerMode = (value: SetStateAction<InterviewerMode>) =>
+    updateSessionField("interviewerMode", value);
+  const setEditorLocked = (value: SetStateAction<boolean>) =>
+    updateSessionField("editorLocked", value);
+  const setCode = (value: SetStateAction<string>) =>
+    updateSessionField("code", value);
+  const setTranscript = (value: SetStateAction<string>) =>
+    updateSessionField("transcript", value);
+  const setTranslation = (value: SetStateAction<string>) =>
+    updateSessionField("translation", value);
+  const setSilenceSeconds = (value: SetStateAction<number>) =>
+    updateSessionField("silenceSeconds", value);
 
   // UI state
   const [isListening, setIsListening] = useState(false);
@@ -331,22 +409,6 @@ export default function Home() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const isListeningRef = useRef(false);
   const curveballFiredRef = useRef(false);
-
-  // ── Persist session ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const session: PersistedSession = {
-      stage,
-      language,
-      interviewerMode,
-      editorLocked,
-      code,
-      transcript,
-      translation,
-      silenceSeconds,
-    };
-    window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  }, [stage, language, interviewerMode, editorLocked, code, transcript, translation, silenceSeconds]);
 
   // ── Silence / dead-air timer ─────────────────────────────────────────────
   useEffect(() => {
@@ -440,6 +502,8 @@ export default function Home() {
     setPitchMissing([]);
     setErrorBanner(null);
 
+    let result: ReturnType<typeof analyzePitchLocal>;
+    let usedLocalCheck = false;
     try {
       const res = await fetch("/api/validate-pitch", {
         method: "POST",
@@ -447,14 +511,14 @@ export default function Home() {
         body: JSON.stringify({ transcript }),
       });
 
-      let result: { valid: boolean; missing: string[]; translation: string };
-
       if (!res.ok) {
-        // Gracefully fall back to client-side check
+        usedLocalCheck = true;
+        console.error("AI pitch validation unavailable:", res.status);
         result = analyzePitchLocal(transcript);
       } else {
         const data = (await res.json()) as { valid?: boolean; missing?: string[]; translation?: string; error?: string };
         if (data.error) {
+          usedLocalCheck = true;
           result = analyzePitchLocal(transcript);
         } else {
           result = {
@@ -464,42 +528,31 @@ export default function Home() {
           };
         }
       }
-
-      if (!result.valid) {
-        setPitchMissing(result.missing);
-        const msg = `Your pitch is missing: ${result.missing.join(", ")}. Please cover those points before I unlock the editor.`;
-        setErrorBanner(msg);
-        speakAi(msg);
-      } else {
-        setTranslation(result.translation);
-        setEditorLocked(false);
-        setStage("coding");
-        setDeadAirBanner(false);
-        setErrorBanner(null);
-        setPitchMissing([]);
-        speakAi(
-          "Editor unlocked. Excellent approach. Continue coding and narrate your implementation step by step.",
-        );
-      }
-    } catch {
-      // Network failure — fall back
-      const result = analyzePitchLocal(transcript);
-      if (!result.valid) {
-        setPitchMissing(result.missing);
-        const msg = `Your pitch is missing: ${result.missing.join(", ")}.`;
-        setErrorBanner(msg);
-        speakAi(msg);
-      } else {
-        setTranslation(result.translation);
-        setEditorLocked(false);
-        setStage("coding");
-        setDeadAirBanner(false);
-        setErrorBanner(null);
-        speakAi("Editor unlocked. Keep narrating as you code.");
-      }
-    } finally {
-      setPitchLoading(false);
+    } catch (error) {
+      console.error("AI pitch validation request failed:", error);
+      usedLocalCheck = true;
+      result = analyzePitchLocal(transcript);
     }
+
+    const fallbackNotice =
+      "AI pitch review is unavailable; a local checklist was used. Configure a valid GROQ_API_KEY to enable AI review.";
+    if (!result.valid) {
+      setPitchMissing(result.missing);
+      const msg = `${usedLocalCheck ? `${fallbackNotice} ` : ""}Your pitch is missing: ${result.missing.join(", ")}. Please cover those points before I unlock the editor.`;
+      setErrorBanner(msg);
+      speakAi(msg);
+    } else {
+      setTranslation(result.translation);
+      setEditorLocked(false);
+      setStage("coding");
+      setDeadAirBanner(false);
+      setErrorBanner(usedLocalCheck ? fallbackNotice : null);
+      setPitchMissing([]);
+      speakAi(
+        "Editor unlocked. Excellent approach. Continue coding and narrate your implementation step by step.",
+      );
+    }
+    setPitchLoading(false);
   };
 
   const fireCurveball = useCallback(async (
@@ -516,7 +569,8 @@ export default function Home() {
       let question: string;
 
       if (!res.ok) {
-        // Static fallback questions per trigger
+        console.error("AI curveball unavailable:", res.status);
+        setErrorBanner("AI follow-up is unavailable; a built-in edge-case question was used.");
         const fallbacks: Record<string, string> = {
           nested_loop: "I see a nested loop forming — what does this do to your worst-case time complexity?",
           missing_boundary: "What happens if the input array is empty or contains all duplicate elements?",
@@ -531,7 +585,9 @@ export default function Home() {
 
       setCurveball(question);
       speakAi(question);
-    } catch {
+    } catch (error) {
+      console.error("AI curveball request failed:", error);
+      setErrorBanner("AI follow-up is unavailable; a built-in edge-case question was used.");
       const fallback = "What happens if the input array is empty or has only one element?";
       setCurveball(fallback);
       speakAi(fallback);
@@ -578,31 +634,67 @@ export default function Home() {
     numbers: ScoreNumbers,
     fillerCount: number,
   ) => {
-    const response = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        overallScore: numbers.overall,
-        communicationScore: numbers.communication,
-        deadAirPercent: numbers.deadAirPercent,
-        fillerCount,
-        questionId: "two-sum",
-        questionTitle: problem.title,
-        difficulty: problem.difficulty,
-        hintsUsed: 0,
-        passed: evaluateCode(code).passed,
-        transcriptData: {
-          transcript,
-          translation,
-          code,
-          audit,
-          auditSummary,
-          silenceSeconds,
-        },
-      }),
-    });
+    const passed = evaluateCode(code).passed;
+    const localSession: SessionRecord = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      questionTitle: problem.title,
+      difficulty: problem.difficulty,
+      score: numbers.overall,
+      hintsUsed: 0,
+      passed,
+      communication: numbers.communication,
+      deadAirPercent: numbers.deadAirPercent,
+      fillerCount,
+    };
+
+    let response: Response;
+    try {
+      response = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          overallScore: numbers.overall,
+          communicationScore: numbers.communication,
+          deadAirPercent: numbers.deadAirPercent,
+          fillerCount,
+          questionId: "two-sum",
+          questionTitle: problem.title,
+          difficulty: problem.difficulty,
+          hintsUsed: 0,
+          passed,
+          transcriptData: {
+            transcript,
+            translation,
+            code,
+            audit,
+            auditSummary,
+            silenceSeconds,
+          },
+        }),
+      });
+    } catch (error) {
+      saveGuestSession(localSession);
+      setErrorBanner(
+        "Account sync is unavailable, so this session was saved on this device only.",
+      );
+      console.error("Could not sync interview session:", error);
+      return;
+    }
+
     if (!response.ok) {
-      const result = (await response.json()) as { error?: string };
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (response.status === 401 || response.status >= 500) {
+        saveGuestSession(localSession);
+        setErrorBanner(
+          response.status === 401
+            ? "Guest session saved on this device. Sign in to sync it to your account."
+            : "Account sync failed, so this session was saved on this device only.",
+        );
+        return;
+      }
       throw new Error(result.error ?? "Could not save interview session.");
     }
   };
@@ -614,6 +706,8 @@ export default function Home() {
     const numbers = buildScoreNumbers(transcript, silenceSeconds, code);
     const fillerCount = countFillerWords(transcript);
 
+    let audit: AuditEntry[] = [];
+    let auditSummary = "";
     try {
       const res = await fetch("/api/scorecard", {
         method: "POST",
@@ -629,9 +723,6 @@ export default function Home() {
         }),
       });
 
-      let audit: { timestamp: string; quote: string; feedback: string }[] = [];
-      let auditSummary = "";
-
       if (res.ok) {
         const data = (await res.json()) as {
           audit?: typeof audit;
@@ -640,48 +731,45 @@ export default function Home() {
         };
         audit = data.audit ?? [];
         auditSummary = data.summary ?? "";
+      } else {
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setErrorBanner(
+          data.error ?? "AI review is unavailable; a local score estimate is shown.",
+        );
       }
+    } catch (error) {
+      console.error("Could not generate the interview AI review:", error);
+      setErrorBanner("AI review is unavailable; a local score estimate is shown.");
+    }
 
-      try {
-        await persistSession(audit, auditSummary, numbers, fillerCount);
-      } catch (err) {
-        console.error("Could not persist interview session:", err);
-        setErrorBanner(
-          err instanceof Error
-            ? err.message
-            : "Could not save interview session to your account.",
-        );
-      }
-      setScore({ ...numbers, audit, auditSummary });
-      setStage("submitted");
-      speakAi(`Interview complete. Your hireability index is ${numbers.overall} out of 100.`);
-    } catch {
-      try {
-        await persistSession([], "", numbers, fillerCount);
-      } catch (err) {
-        console.error("Could not persist interview session:", err);
-        setErrorBanner(
-          err instanceof Error
-            ? err.message
-            : "Could not save interview session to your account.",
-        );
-      }
-      setScore({ ...numbers, audit: [], auditSummary: "" });
-      setStage("submitted");
-      speakAi(`Interview complete. Your hireability index is ${numbers.overall} out of 100.`);
+    try {
+      await persistSession(audit, auditSummary, numbers, fillerCount);
+    } catch (error) {
+      console.error("Could not persist interview session:", error);
+      setErrorBanner(
+        error instanceof Error
+          ? error.message
+          : "Could not save interview session.",
+      );
     } finally {
       setScorecardLoading(false);
     }
+    setScore({ ...numbers, audit, auditSummary });
+    setStage("submitted");
+    speakAi(`Interview complete. Your hireability index is ${numbers.overall} out of 100.`);
   };
 
   const resetSession = () => {
     stopSpeechCapture();
-    setStage("setup");
-    setEditorLocked(true);
-    setCode(defaultCode[language]);
-    setTranscript("");
+    writeSessionSnapshot({
+      ...freshSession(),
+      language,
+      interviewerMode,
+      code: defaultCode[language],
+    });
     setTranslation("");
-    setSilenceSeconds(0);
     setCurveball(null);
     setCurveballResponse("");
     setScore(null);
@@ -689,9 +777,6 @@ export default function Home() {
     setDeadAirBanner(false);
     setPitchMissing([]);
     curveballFiredRef.current = false;
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(SESSION_KEY);
-    }
   };
 
   // ── Derived values ───────────────────────────────────────────────────────
@@ -707,37 +792,48 @@ export default function Home() {
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-[#07121f] px-4 py-6 text-slate-50">
+    <main className="interview-workspace min-h-screen bg-[#f7f6f3] px-4 py-6 text-[#191916]">
       <div className="mx-auto max-w-7xl space-y-6">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <header className="flex flex-col gap-4 rounded-2xl border border-cyan-500/20 bg-slate-900/80 p-4 shadow-2xl shadow-cyan-950/40 md:flex-row md:items-center md:justify-between">
+        <header className="flex flex-col gap-4 rounded-2xl border border-stone-200/80 bg-white p-4 shadow-lg shadow-black/5 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">
+            <p className="text-xs uppercase tracking-[0.22em] text-[#92713a]">
               Voice-First DSA Interview Simulator
             </p>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight text-white">
-              CodeOut<span className="text-cyan-400">Loud</span>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight text-[#191916]">
+              CodeOut<span className="text-[#92713a]">Loud</span>
             </h1>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <Link
               href="/"
-              className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 transition hover:bg-slate-700"
+              className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1.5 text-sm text-stone-700 transition hover:bg-[#eee9dc]"
             >
               Dashboard
             </Link>
-            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-sm text-emerald-200">
+            <Link
+              href="/#progress"
+              className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1.5 text-sm text-stone-700 transition hover:bg-[#eee9dc]"
+            >
+              My progress
+            </Link>
+            <button
+              type="button"
+              onClick={() => setUpgradeOpen(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-[#c8a45c]/50 bg-[#fffdf7] px-3 py-1.5 text-sm font-semibold text-[#70521c] transition hover:bg-[#f8f0dd]"
+            >
+              <Sparkles size={14} />
+              Upgrade to Pro
+            </button>
+            <span className="inline-flex items-center gap-2 rounded-full border border-[#c8a45c]/30 bg-[#c8a45c]/10 px-3 py-1 text-sm text-[#725a2f]">
               <CheckCircle2 size={13} />
-              AI Interviewer Active
-            </span>
-            <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1 text-sm text-violet-200">
-              All curveballs and scorecards are AI-generated
+              Voice practice
             </span>
             {stage !== "setup" && (
               <button
                 onClick={resetSession}
-                className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-sm text-slate-300 hover:bg-slate-700"
+                className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1 text-sm text-stone-600 hover:bg-[#eee9dc]"
               >
                 Reset session
               </button>
@@ -1135,7 +1231,7 @@ export default function Home() {
         {score && (
           <section
             aria-label="Hireability scorecard"
-            className="rounded-2xl border border-emerald-400/20 bg-[#071d1b] p-6"
+            className="rounded-2xl border border-stone-200/80 bg-white p-6"
           >
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -1147,8 +1243,8 @@ export default function Home() {
                   <span className="ml-1 text-2xl font-normal text-slate-400">/100</span>
                 </p>
               </div>
-              <span className="rounded-full border border-emerald-300/30 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-200">
-                AI-inspected interview report
+              <span className="rounded-full border border-[#c8a45c]/30 bg-[#c8a45c]/10 px-3 py-1 text-sm text-[#725a2f]">
+                {score.audit.length ? "AI transcript review" : "Local score estimate"}
               </span>
             </div>
 
@@ -1168,7 +1264,7 @@ export default function Home() {
             </div>
 
             <div className="mt-6 grid gap-4 md:grid-cols-2">
-              {/* What you should have said — from AI audit or static fallback */}
+              {/* Transcript feedback is shown only when the AI review succeeds. */}
               <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
                 <p className="mb-3 text-xs uppercase tracking-[0.2em] text-slate-400">
                   What you should have said
@@ -1184,25 +1280,12 @@ export default function Home() {
                           <span className="ml-1 text-slate-200"> — {entry.feedback}</span>
                         </li>
                       ))
-                    : [
-                        {
-                          ts: "00:45",
-                          msg: "You jumped straight into the optimal solution without mentioning the brute-force trade-off.",
-                        },
-                        {
-                          ts: "02:15",
-                          msg: "Good job identifying the hash-map optimization.",
-                        },
-                        {
-                          ts: "03:10",
-                          msg: "State the duplicate-edge scenario before the final implementation.",
-                        },
-                      ].map(({ ts, msg }) => (
-                        <li key={ts}>
-                          <span className="mr-2 font-mono text-xs text-cyan-400">{ts}</span>
-                          {msg}
+                      : (
+                        <li>
+                          AI transcript feedback was unavailable for this session.
+                          Configure <code>GROQ_API_KEY</code> to enable it.
                         </li>
-                      ))}
+                      )}
                 </ul>
                 {score.auditSummary && (
                   <p className="mt-4 border-t border-slate-700 pt-3 text-sm text-slate-300">
@@ -1247,6 +1330,10 @@ export default function Home() {
           </section>
         )}
       </div>
+      <UpgradeToProModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+      />
     </main>
   );
 }

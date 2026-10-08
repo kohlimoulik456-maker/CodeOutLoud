@@ -23,19 +23,10 @@ export async function POST(req: NextRequest) {
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    // Return a minimal static audit as a graceful fallback
-    return NextResponse.json<ScorecardAudit>({
-      audit: [
-        {
-          timestamp: "00:45",
-          quote: "(transcript analysis unavailable — GROQ_API_KEY not set)",
-          feedback:
-            "Add your Groq API key in .env.local to receive a detailed timestamped audit.",
-        },
-      ],
-      summary:
-        "Configure GROQ_API_KEY in .env.local to unlock AI-powered post-interview analysis.",
-    });
+    return NextResponse.json(
+      { error: "GROQ_API_KEY not configured" },
+      { status: 503 },
+    );
   }
 
   const systemPrompt = `You are a senior technical interview coach generating a post-interview audit report.

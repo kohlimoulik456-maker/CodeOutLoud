@@ -11,7 +11,6 @@ import {
   BookOpen,
   Brain,
   Check,
-  CircleHelp,
   Code2,
   Flame,
   LayoutDashboard,
@@ -24,24 +23,19 @@ import {
   Trophy,
   Zap,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { signOut } from "../app/actions/auth";
 import UpgradeToProModal from "../components/UpgradeToProModal";
+import PrepCoach from "../components/coach/PrepCoach";
 import SystemDesignCard from "../components/interview/SystemDesignCard";
 import TheoryCard from "../components/interview/TheoryCard";
+import {
+  GUEST_SESSION_EVENT,
+  loadGuestSessions,
+  type SessionRecord,
+} from "../utils/session-history";
 
-export type SessionRecord = {
-  id: string;
-  createdAt: string;
-  questionTitle: string;
-  difficulty: string;
-  score: number;
-  hintsUsed: number;
-  passed: boolean;
-  communication: number;
-  deadAirPercent: number;
-  fillerCount: number;
-};
+export type { SessionRecord } from "../utils/session-history";
 
 function formatDate(value: string) {
   return value.slice(0, 10);
@@ -90,7 +84,7 @@ function TrendChart({ sessions }: { sessions: SessionRecord[] }) {
           </div>
         ))}
       </div>
-      {plotted.length > 1 ? (
+      {plotted.length > 0 ? (
         <svg
           viewBox="0 0 280 100"
           preserveAspectRatio="none"
@@ -145,38 +139,66 @@ export default function Dashboard({
   userEmail: string;
 }) {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [localSessions, setLocalSessions] = useState<SessionRecord[]>([]);
 
-  const averageScore = sessions.length
+  useEffect(() => {
+    function syncLocalSessions() {
+      try {
+        setLocalSessions(loadGuestSessions());
+      } catch (error) {
+        console.error("Could not load local interview history:", error);
+      }
+    }
+    syncLocalSessions();
+    window.addEventListener("storage", syncLocalSessions);
+    window.addEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
+    return () => {
+      window.removeEventListener("storage", syncLocalSessions);
+      window.removeEventListener(GUEST_SESSION_EVENT, syncLocalSessions);
+    };
+  }, []);
+
+  const allSessions = useMemo(() => {
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    localSessions.forEach((session) => {
+      if (!byId.has(session.id)) byId.set(session.id, session);
+    });
+    return [...byId.values()].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }, [sessions, localSessions]);
+
+  const averageScore = allSessions.length
     ? Math.round(
-        sessions.reduce((total, session) => total + session.score, 0) /
-          sessions.length,
+        allSessions.reduce((total, session) => total + session.score, 0) /
+          allSessions.length,
       )
     : 0;
-  const averageCommunication = sessions.length
+  const averageCommunication = allSessions.length
     ? Math.round(
-        sessions.reduce(
+        allSessions.reduce(
           (total, session) => total + session.communication,
           0,
-        ) / sessions.length,
+        ) / allSessions.length,
       )
     : 0;
-  const solved = sessions.filter((session) => session.passed).length;
+  const solved = allSessions.filter((session) => session.passed).length;
   const activeDays = new Set(
-    sessions.map((session) => session.createdAt.slice(0, 10)),
+    allSessions.map((session) => session.createdAt.slice(0, 10)),
   ).size;
-  const latestSessions = [...sessions]
+  const latestSessions = [...allSessions]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, 4);
 
   const activityDates = [
-    ...new Set(sessions.map((session) => session.createdAt.slice(0, 10))),
+    ...new Set(allSessions.map((session) => session.createdAt.slice(0, 10))),
   ]
     .sort()
     .slice(-35);
   const heatmap = Array.from({ length: 35 }, (_, index) => {
     const historyIndex = index - (35 - activityDates.length);
     const day = historyIndex >= 0 ? activityDates[historyIndex] : "";
-    const daySessions = sessions.filter(
+    const daySessions = allSessions.filter(
       (session) => session.createdAt.slice(0, 10) === day,
     );
     const best = daySessions.reduce(
@@ -212,13 +234,13 @@ export default function Dashboard({
           Workspace
         </p>
         <nav className="space-y-1">
-          <a
-            href="#overview"
+          <Link
+            href="/#overview"
             className="flex items-center gap-3 rounded-xl bg-white/10 px-3 py-2.5 text-sm text-white"
           >
             <LayoutDashboard size={17} className="text-[#d8bb79]" />
             Overview
-          </a>
+          </Link>
           <Link
             href="/interview"
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-stone-400 transition hover:bg-white/5 hover:text-white"
@@ -226,13 +248,13 @@ export default function Dashboard({
             <Mic2 size={17} />
             Practice interview
           </Link>
-          <a
-            href="#progress"
+          <Link
+            href="/#progress"
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-stone-400 transition hover:bg-white/5 hover:text-white"
           >
             <BarChart3 size={17} />
             My progress
-          </a>
+          </Link>
         </nav>
         <p className="mb-3 mt-9 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
           Coming soon
@@ -307,6 +329,20 @@ export default function Dashboard({
             </div>
           </div>
         </header>
+        <nav
+          aria-label="Workspace navigation"
+          className="flex gap-2 border-b border-stone-200/80 bg-[#f7f6f3] px-5 py-2 lg:hidden"
+        >
+          <Link href="/" className="rounded-lg bg-white px-3 py-2 text-xs font-medium text-stone-700">
+            Dashboard
+          </Link>
+          <Link href="/interview" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
+            Practice
+          </Link>
+          <Link href="/#progress" className="rounded-lg px-3 py-2 text-xs font-medium text-stone-600 hover:bg-white">
+            Progress
+          </Link>
+        </nav>
 
         <main id="overview" className="mx-auto max-w-[1440px] px-5 py-8 sm:px-8">
           <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -377,15 +413,15 @@ export default function Dashboard({
                 {[
                   {
                     label: "Sessions completed",
-                    value: sessions.length,
+                    value: allSessions.length,
                     icon: Activity,
                     note: "Keep showing up",
                   },
                   {
                     label: "Average score",
-                    value: sessions.length ? `${averageScore}` : "—",
+                    value: allSessions.length ? `${averageScore}` : "—",
                     icon: Target,
-                    note: sessions.length ? "Across all sessions" : "Earn your first score",
+                    note: allSessions.length ? "Across all sessions" : "Earn your first score",
                   },
                   {
                     label: "Problems solved",
@@ -423,9 +459,9 @@ export default function Dashboard({
 
               <section
                 id="progress"
-                className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]"
+                className="grid min-w-0 gap-5 xl:grid-cols-[1.1fr_0.9fr]"
               >
-                <article className="rounded-2xl border border-stone-200/80 bg-white p-5 sm:p-6">
+                <article className="min-w-0 rounded-2xl border border-stone-200/80 bg-white p-5 sm:p-6">
                   <div className="flex items-start justify-between">
                     <div>
                       <h2 className="text-sm font-semibold">Practice consistency</h2>
@@ -437,14 +473,16 @@ export default function Dashboard({
                       Hints used
                     </span>
                   </div>
-                  <div className="mt-5 flex gap-[5px]">
-                    {heatmap.map((cell) => (
-                      <div
-                        key={cell.day}
-                        title={cell.day ? `${cell.day}: ${cell.count} session${cell.count === 1 ? "" : "s"}` : "No session"}
-                        className={`size-[11px] flex-1 rounded-[3px] ${cell.tone}`}
-                      />
-                    ))}
+                  <div className="mt-5 min-w-0 max-w-full overflow-x-auto">
+                    <div className="flex min-w-[555px] gap-[5px]">
+                      {heatmap.map((cell, index) => (
+                        <div
+                          key={cell.day || `empty-${index}`}
+                          title={cell.day ? `${cell.day}: ${cell.count} session${cell.count === 1 ? "" : "s"}` : "No session"}
+                          className={`size-[11px] shrink-0 rounded-[3px] ${cell.tone}`}
+                        />
+                      ))}
+                    </div>
                   </div>
                   <div className="mt-3 flex items-center justify-between text-[10px] text-stone-400">
                     <span>Earlier</span>
@@ -469,7 +507,7 @@ export default function Dashboard({
                   </div>
                 </article>
 
-                <article className="rounded-2xl border border-stone-200/80 bg-white p-5 sm:p-6">
+                <article className="min-w-0 rounded-2xl border border-stone-200/80 bg-white p-5 sm:p-6">
                   <div className="flex items-start justify-between">
                     <div>
                       <h2 className="text-sm font-semibold">Communication clarity</h2>
@@ -478,10 +516,10 @@ export default function Dashboard({
                       </p>
                     </div>
                     <span className="flex items-center gap-1 rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-medium text-stone-500">
-                      {sessions.length ? `${averageCommunication}% avg` : "No sessions"}
+                      {allSessions.length ? `${averageCommunication}% avg` : "No sessions"}
                     </span>
                   </div>
-                  <TrendChart sessions={sessions} />
+                  <TrendChart sessions={allSessions} />
                 </article>
               </section>
 
@@ -529,7 +567,7 @@ export default function Dashboard({
                     </p>
                   </div>
                   <span className="text-xs text-stone-400">
-                    {sessions.length} total
+                    {allSessions.length} total
                   </span>
                 </div>
                 {latestSessions.length ? (
@@ -583,51 +621,7 @@ export default function Dashboard({
             </div>
 
             <aside className="space-y-5">
-              <section className="rounded-2xl border border-stone-200/80 bg-white p-5">
-                <div className="flex items-center gap-2.5">
-                  <span className="grid size-9 place-items-center rounded-xl bg-[#1d1d19] text-[#dfc27d]">
-                    <Sparkles size={16} />
-                  </span>
-                  <div>
-                    <h2 className="text-sm font-semibold">Your prep coach</h2>
-                    <p className="text-[10px] text-stone-500">Here when you need a nudge</p>
-                  </div>
-                  <span className="ml-auto size-2 rounded-full bg-emerald-500" />
-                </div>
-                <div className="mt-5 rounded-xl bg-[#f7f6f3] p-3.5">
-                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#92713a]">
-                    <Brain size={12} />
-                    A good interview habit
-                  </div>
-                  <p className="text-xs leading-5 text-stone-600">
-                    Start with the simplest solution. Then explain what makes it
-                    slow before you introduce an optimization.
-                  </p>
-                </div>
-                <div className="mt-4 space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400">
-                    Try asking
-                  </p>
-                  {[
-                    "How do I explain Big O clearly?",
-                    "What is a useful edge case?",
-                    "Help me think through Two Sum",
-                  ].map((prompt) => (
-                    <Link
-                      key={prompt}
-                      href="/interview"
-                      className="flex w-full items-center justify-between rounded-lg border border-stone-100 px-3 py-2.5 text-left text-[11px] text-stone-600 transition hover:border-[#c8a45c]/40 hover:bg-[#fffdf8]"
-                    >
-                      {prompt}
-                      <ArrowUpRight size={12} className="shrink-0 text-stone-400" />
-                    </Link>
-                  ))}
-                </div>
-                <div className="mt-4 flex items-start gap-2 border-t border-stone-100 pt-4 text-[10px] leading-4 text-stone-400">
-                  <CircleHelp size={13} className="mt-0.5 shrink-0" />
-                  Coaching prompts are available during your interview session.
-                </div>
-              </section>
+              <PrepCoach />
 
               <section className="rounded-2xl border border-[#dfd4bd] bg-[#f1ebdd] p-5">
                 <div className="flex items-center gap-2 text-[#725a2f]">
@@ -641,13 +635,13 @@ export default function Dashboard({
                 <div className="mt-4 flex items-center justify-between border-t border-[#dfd4bd] pt-3">
                   <span className="text-[11px] text-[#746a56]">Your practice score</span>
                   <span className="text-sm font-semibold text-[#725a2f]">
-                    {sessions.length ? averageScore : "—"}
+                    {allSessions.length ? averageScore : "—"}
                   </span>
                 </div>
               </section>
 
               <div className="flex items-center gap-2 px-1 text-[10px] text-stone-400">
-                {sessions.length ? (
+                {allSessions.length ? (
                   <>
                     <ArrowUpRight size={12} />
                     Progress updates after each completed session

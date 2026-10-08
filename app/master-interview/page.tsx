@@ -1,21 +1,11 @@
 import Link from "next/link";
 import { ArrowLeft, LockKeyhole, Sparkles } from "lucide-react";
-import { redirect } from "next/navigation";
 import { connection } from "next/server";
-import { isSupabaseConfigured } from "../../utils/supabase/config";
-import { createClient } from "../../utils/supabase/server";
 
 export const instant = false;
 
 export default async function MasterInterviewPage() {
   await connection();
-  if (!isSupabaseConfigured()) redirect("/login");
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
   return (
     <main className="grid min-h-screen place-items-center bg-[#f7f6f3] px-5 py-12 text-[#191916]">
       <section className="w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-8 text-center shadow-sm">
