@@ -17,7 +17,7 @@ export default async function HomePage() {
       error: authError,
     } = await supabase.auth.getUser();
 
-    if (authError) {
+    if (authError && authError.name !== "AuthSessionMissingError") {
       console.error("Could not validate dashboard session:", authError.message);
     } else if (user) {
       userEmail = user.email ?? "Account";
