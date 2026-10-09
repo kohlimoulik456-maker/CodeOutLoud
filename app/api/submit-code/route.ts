@@ -281,9 +281,9 @@ export async function POST(request: Request) {
         stdin: "",
         args: [],
         compile_timeout: 10000,
-        run_timeout: 5000,
-        compile_memory_limit: 128000000,
-        run_memory_limit: 128000000,
+        run_timeout: 3000,
+        compile_memory_limit: 512000000,
+        run_memory_limit: 256000000,
       }),
       signal: AbortSignal.timeout(25_000),
     });

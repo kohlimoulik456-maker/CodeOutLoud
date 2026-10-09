@@ -50,12 +50,22 @@ test("generates wrappers for supported interview languages", () => {
     ["C++", "c++", "__RESULT__"],
     ["Java", "java", "__RESULT__"],
   ]) {
-    const valid = validateExecutionRequest(request(language));
+    const valid = validateExecutionRequest(
+      request(language, language === "Java" ? "class Solution {}" : undefined),
+    );
     assert.ok(valid);
     const program = createPistonProgram(valid);
     assert.equal(program.language, pistonLanguage);
     assert.ok(program.version);
     assert.ok(program.source.includes(marker));
+    if (language === "C++") {
+      assert.ok(program.source.includes("__arg0_0"));
+      assert.ok(program.source.includes("__arg1_0"));
+      assert.ok(program.source.includes("void __write(int value)"));
+    }
+    if (language === "Java") {
+      assert.ok(program.source.indexOf("class Main") < program.source.indexOf("class Solution"));
+    }
   }
 });
 

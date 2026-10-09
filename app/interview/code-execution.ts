@@ -204,10 +204,12 @@ function wrapCpp(code: string, spec: ProblemExecutionSpec): string {
     const declarations = sample.args
       .map(
         (arg, argIndex) =>
-          `${cppType(spec.parameterTypes[argIndex])} __arg${argIndex} = ${typedLiteral(arg, spec.parameterTypes[argIndex], "cpp")};`,
+          `${cppType(spec.parameterTypes[argIndex])} __arg${index}_${argIndex} = ${typedLiteral(arg, spec.parameterTypes[argIndex], "cpp")};`,
       )
       .join("\n");
-    const args = sample.args.map((_, argIndex) => `__arg${argIndex}`).join(", ");
+    const args = sample.args
+      .map((_, argIndex) => `__arg${index}_${argIndex}`)
+      .join(", ");
     return `${declarations}
   if (${index}) cout << ",";
   __write(__solution.${spec.methodName}(${args}));`;
@@ -218,7 +220,10 @@ ${code}
 void __write(const string& value) { cout << '"'; for (char c : value) { if (c == '"' || c == '\\\\') cout << '\\\\' << c; else if (c == '\\n') cout << "\\\\n"; else if (c == '\\r') cout << "\\\\r"; else if (c == '\\t') cout << "\\\\t"; else cout << c; } cout << '"'; }
 void __write(char value) { __write(string(1, value)); }
 void __write(bool value) { cout << (value ? "true" : "false"); }
-template<class T> void __write(const vector<T>& values) { cout << "["; for (size_t i = 0; i < values.size(); ++i) { if (i) cout << ","; __write(static_cast<T>(values[i])); } cout << "]"; }
+void __write(int value) { cout << value; }
+void __write(long long value) { cout << value; }
+void __write(double value) { cout << value; }
+template<class T> void __write(const vector<T>& values) { cout << "["; for (size_t i = 0; i < values.size(); ++i) { if (i) cout << ","; __write(values[i]); } cout << "]"; }
 template<class T> void __write(const T& value) { cout << value; }
 int main() {
   Solution __solution;
@@ -241,7 +246,6 @@ function wrapJava(code: string, spec: ProblemExecutionSpec): string {
   });
   return `import java.lang.reflect.Array;
 import java.util.*;
-${code}
 class Main {
   static void __write(Object value) {
     if (value == null) { System.out.print("null"); return; }
@@ -263,7 +267,8 @@ class Main {
     ${calls.join("\n    ")}
     System.out.println("]");
   }
-}`;
+}
+${code}`;
 }
 
 export function createPistonProgram(
