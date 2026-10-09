@@ -19,7 +19,6 @@ import {
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -28,6 +27,22 @@ import type { SetStateAction } from "react";
 import UpgradeToProModal from "../../components/UpgradeToProModal";
 import { saveGuestSession, type SessionRecord } from "../../utils/session-history";
 import type { InterviewLanguage, LeetCodeProblem } from "./problem-types";
+import { getCurveballDelay, getEditorLockLabel } from "./editor-lock";
+import {
+  parseCodeSubmissionError,
+  parseCodeSubmissionResponse,
+  isCurrentCodeSubmission,
+  type CodeSubmissionResult,
+} from "./code-execution";
+import {
+  isPitchValidationError,
+  isCurrentPitchAttempt,
+  isPitchAttemptOver,
+  nextPitchAttemptCount,
+  PITCH_PASS_THRESHOLDS,
+  parsePitchApiResponse,
+  shouldUnlockPitch,
+} from "./pitch-validation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,30 +115,6 @@ const CURVEBALL_AUTO_SEC = 30;
 
 function countFillerWords(text: string) {
   return (text.match(/\b(um|uh|like|basically|so yeah|you know|seriously)\b/gi) ?? []).length;
-}
-
-/** Client-side heuristic fallback for pitch validation (used if API unavailable) */
-function analyzePitchLocal(transcript: string) {
-  const lower = transcript.toLowerCase();
-  const hasBrute =
-    /brute|naive|simple|check every|nested loop|all pairs|iterate all|for each pair/i.test(lower);
-  const hasAlgo =
-    /hash ?map|hash ?table|dictionary|\bmap\b|two pointer|pointer|sort|stack|queue|bfs|dfs|binary search|greedy|dp|dynamic/i.test(
-      lower,
-    );
-  const hasComplexity =
-    /(o\s*\([^)]+\)|big-?o|time complexity|space complexity|complexity)/i.test(lower);
-
-  const missing: string[] = [];
-  if (!hasBrute) missing.push("brute-force intuition");
-  if (!hasAlgo) missing.push("targeted algorithm or data structure");
-  if (!hasComplexity) missing.push("time and space complexity");
-
-  const translation = hasAlgo
-    ? "I will establish the baseline, explain the selected algorithm or data structure, and justify its time and space complexity."
-    : "I will compare a straightforward solution with a more efficient technique, then explain its time and space complexity.";
-
-  return { valid: missing.length === 0, missing, translation };
 }
 
 function evaluateCode(
@@ -245,6 +236,7 @@ type PersistedSession = {
   language: Language;
   interviewerMode: InterviewerMode;
   editorLocked: boolean;
+  pitchValidated: boolean;
   code: string;
   transcript: string;
   translation: string;
@@ -257,6 +249,7 @@ function freshSession(): PersistedSession {
     language: "JavaScript",
     interviewerMode: "FAANG Bar Raiser",
     editorLocked: true,
+    pitchValidated: false,
     code: "",
     transcript: "",
     translation: "",
@@ -270,7 +263,16 @@ function loadSession(): PersistedSession {
   try {
     const raw = window.localStorage.getItem(SESSION_KEY);
     if (!raw) return fallback;
-    return { ...fallback, ...(JSON.parse(raw) as Partial<PersistedSession>) };
+    const session = {
+      ...fallback,
+      ...(JSON.parse(raw) as Partial<PersistedSession>),
+    };
+    if (session.stage !== "setup" && !session.pitchValidated) {
+      session.stage = "pitch";
+      session.editorLocked = true;
+      session.translation = "";
+    }
+    return session;
   } catch {
     return fallback;
   }
@@ -281,7 +283,7 @@ const FRESH_SESSION_JSON = JSON.stringify(freshSession());
 function getSessionSnapshot() {
   return typeof window === "undefined"
     ? FRESH_SESSION_JSON
-    : window.localStorage.getItem(SESSION_KEY) ?? FRESH_SESSION_JSON;
+    : JSON.stringify(loadSession());
 }
 
 function getServerSessionSnapshot() {
@@ -343,6 +345,7 @@ export default function InterviewArena({
   const editorLocked = initial.editorLocked;
   const code = initial.code;
   const transcript = initial.transcript;
+  const latestTranscriptRef = useRef(transcript);
   const translation = initial.translation;
   const silenceSeconds = initial.silenceSeconds;
   const setStage = (value: SetStateAction<Stage>) =>
@@ -353,8 +356,6 @@ export default function InterviewArena({
     updateSessionField("editorLocked", value);
   const setCode = (value: SetStateAction<string>) =>
     updateSessionField("code", value);
-  const setTranscript = (value: SetStateAction<string>) =>
-    updateSessionField("transcript", value);
   const setTranslation = (value: SetStateAction<string>) =>
     updateSessionField("translation", value);
   const setSilenceSeconds = (value: SetStateAction<number>) =>
@@ -381,11 +382,59 @@ export default function InterviewArena({
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [deadAirBanner, setDeadAirBanner] = useState(false);
   const [pitchMissing, setPitchMissing] = useState<string[]>([]);
+  const [pitchFeedback, setPitchFeedback] = useState<string | null>(null);
+  const [pitchScore, setPitchScore] = useState<number | null>(null);
+  const [pitchAttempts, setPitchAttempts] = useState(0);
+  const [pitchHints, setPitchHints] = useState<string[]>([]);
+  const [pitchAttemptOver, setPitchAttemptOver] = useState(false);
+  const [showReferenceApproach, setShowReferenceApproach] = useState(false);
+  const [referenceApproach, setReferenceApproach] = useState("");
+  const [codeSubmission, setCodeSubmission] = useState<CodeSubmissionResult | null>(null);
+  const [codeSubmissionLoading, setCodeSubmissionLoading] = useState(false);
+  const [codeSubmissionError, setCodeSubmissionError] = useState<string | null>(null);
 
   // Refs
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const isListeningRef = useRef(false);
   const curveballFiredRef = useRef(false);
+  const fireCurveballRef = useRef<
+    (
+      trigger?: "nested_loop" | "missing_boundary" | "silence" | "random",
+    ) => Promise<void>
+  >(() => Promise.resolve());
+  const codingStartedAtRef = useRef<number | null>(null);
+  const validationSequenceRef = useRef(0);
+  const validationInFlightRef = useRef(false);
+  const submissionSequenceRef = useRef(0);
+  const validatePitchRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const autoValidateAfterStopRef = useRef(false);
+
+  const invalidatePitchValidation = useCallback(() => {
+    validationSequenceRef.current += 1;
+    validationInFlightRef.current = false;
+    setPitchLoading(false);
+    setPitchMissing([]);
+    setPitchFeedback(null);
+    setPitchScore(null);
+  }, []);
+
+  const updateTranscript = useCallback((value: SetStateAction<string>) => {
+    const nextTranscript =
+      typeof value === "function"
+        ? value(latestTranscriptRef.current)
+        : value;
+    latestTranscriptRef.current = nextTranscript;
+    invalidatePitchValidation();
+    updateSessionField("transcript", nextTranscript);
+  }, [invalidatePitchValidation]);
+
+  useEffect(
+    () => () => {
+      validationSequenceRef.current += 1;
+      submissionSequenceRef.current += 1;
+    },
+    [],
+  );
 
   // ── Silence / dead-air timer ─────────────────────────────────────────────
   useEffect(() => {
@@ -395,6 +444,16 @@ export default function InterviewArena({
     }, 1000);
     return () => window.clearInterval(ticker);
   }, [stage]);
+
+  useEffect(() => {
+    if (
+      stage === "coding" &&
+      codingStartedAtRef.current === null &&
+      code !== problem.codeTemplates[language]
+    ) {
+      codingStartedAtRef.current = Date.now();
+    }
+  }, [stage, code, language, problem.codeTemplates]);
 
   // Show dead air banner after threshold while coding
   useEffect(() => {
@@ -439,7 +498,7 @@ export default function InterviewArena({
         .map((r) => Array.from(r).map((item) => item.transcript ?? "").join(" "))
         .join(" ")
         .trim();
-      if (raw) setTranscript(raw);
+      if (raw) updateTranscript(raw);
     };
 
     rec.onerror = (event) => {
@@ -452,89 +511,236 @@ export default function InterviewArena({
       // Restart if we deliberately keep listening
       if (isListeningRef.current) {
         try { rec.start(); } catch { /* already started */ }
+      } else if (autoValidateAfterStopRef.current) {
+        autoValidateAfterStopRef.current = false;
+        void validatePitchRef.current();
       }
     };
 
-    rec.start();
+    try {
+      rec.start();
+    } catch (error) {
+      console.error("Could not start speech recognition:", error);
+      setErrorBanner(
+        "The microphone could not be started. Check browser microphone permissions or type your explanation below.",
+      );
+      return;
+    }
     setIsListening(true);
     isListeningRef.current = true;
     recognitionRef.current = rec;
-  }, []);
+  }, [updateTranscript]);
 
-  const stopSpeechCapture = useCallback(() => {
+  const stopSpeechCapture = useCallback((autoValidate = false) => {
+    autoValidateAfterStopRef.current = autoValidate;
+    isListeningRef.current = false;
     recognitionRef.current?.stop();
     setIsListening(false);
-    isListeningRef.current = false;
   }, []);
 
   // ── API calls ────────────────────────────────────────────────────────────
 
-  const validatePitch = async () => {
-    if (!transcript.trim()) {
-      setErrorBanner("Please speak or type your approach first before validating.");
-      speakAi("Please describe your brute-force approach, algorithm, and complexity before I can unlock the editor.");
+  const validatePitch = useCallback(async () => {
+    if (
+      stage !== "pitch" ||
+      pitchAttemptOver ||
+      isListeningRef.current ||
+      validationInFlightRef.current
+    ) {
       return;
     }
+    const submittedTranscript = latestTranscriptRef.current.trim();
+    if (!submittedTranscript) {
+      setPitchFeedback("Please speak or type your approach before validating.");
+      setErrorBanner(null);
+      return;
+    }
+    const currentFailedAttempts = pitchAttempts;
+
+    validationInFlightRef.current = true;
+    const attempt = ++validationSequenceRef.current;
     setPitchLoading(true);
+    updateSessionField("editorLocked", true);
     setPitchMissing([]);
+    setPitchFeedback(null);
     setErrorBanner(null);
 
-    let result: ReturnType<typeof analyzePitchLocal>;
-    let usedLocalCheck = false;
     try {
       const res = await fetch("/api/validate-pitch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript }),
+        body: JSON.stringify({
+          transcript: submittedTranscript,
+          problemTitle: problem.title,
+          problemDescription: problem.content,
+          difficulty: problem.difficulty,
+          topicTags: problem.topicTags.map((tag) => tag.name),
+          failedAttempts: currentFailedAttempts,
+          previousHints: pitchHints,
+        }),
       });
 
-      if (!res.ok) {
-        usedLocalCheck = true;
-        console.error("AI pitch validation unavailable:", res.status);
-        result = analyzePitchLocal(transcript);
+      let payload: unknown;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!isCurrentPitchAttempt(validationSequenceRef.current, attempt)) {
+        return;
+      }
+      const result = parsePitchApiResponse(
+        res.status,
+        payload,
+        problem.difficulty,
+      );
+      if (result.kind === "error") {
+        setErrorBanner(
+          isPitchValidationError(payload)
+            ? payload.error
+            : "Pitch validation could not be completed. Your editor remains locked; check your connection and try again.",
+        );
+        return;
+      }
+
+      if (
+        shouldUnlockPitch(
+          loadSession().stage,
+          isCurrentPitchAttempt(validationSequenceRef.current, attempt),
+          result,
+        )
+      ) {
+        setPitchScore(result.score);
+        writeSessionSnapshot({
+          ...loadSession(),
+          stage: "coding",
+          editorLocked: false,
+          pitchValidated: true,
+          translation: result.translation,
+        });
+        codingStartedAtRef.current = null;
+        setDeadAirBanner(false);
+        setPitchFeedback(result.feedback);
+        setPitchMissing([]);
+        setReferenceApproach(result.referenceApproach);
+        speakAi(
+          `${result.translation || "Your approach is correct."} The editor is unlocked. Please write your code and submit it when you are ready.`,
+        );
       } else {
-        const data = (await res.json()) as { valid?: boolean; missing?: string[]; translation?: string; error?: string };
-        if (data.error) {
-          usedLocalCheck = true;
-          result = analyzePitchLocal(transcript);
+        setPitchScore(result.score);
+        setPitchMissing(result.missing);
+        setPitchFeedback(result.feedback);
+        setReferenceApproach(result.referenceApproach);
+        const nextAttempt = nextPitchAttemptCount(currentFailedAttempts);
+        setPitchAttempts(nextAttempt);
+        setPitchHints((hints) => [...hints, result.hint].slice(-3));
+        if (isPitchAttemptOver(nextAttempt)) {
+          setPitchAttemptOver(true);
+          speakAi(
+            "That was the third unsuccessful attempt. You can review the approach or choose another problem.",
+          );
         } else {
-          result = {
-            valid: data.valid ?? false,
-            missing: data.missing ?? [],
-            translation: data.translation ?? "",
-          };
+          speakAi(`Here is a hint for your next try. ${result.hint}`);
         }
       }
     } catch (error) {
-      console.error("AI pitch validation request failed:", error);
-      usedLocalCheck = true;
-      result = analyzePitchLocal(transcript);
+      if (isCurrentPitchAttempt(validationSequenceRef.current, attempt)) {
+        console.error("AI pitch validation request failed:", error);
+        setErrorBanner(
+          "Pitch validation could not be reached. Your editor remains locked; check your connection and try again.",
+        );
+      }
+    } finally {
+      if (isCurrentPitchAttempt(validationSequenceRef.current, attempt)) {
+        validationInFlightRef.current = false;
+        setPitchLoading(false);
+      }
     }
+  }, [
+    pitchAttemptOver,
+    pitchAttempts,
+    pitchHints,
+    problem.content,
+    problem.difficulty,
+    problem.title,
+    problem.topicTags,
+    speakAi,
+    stage,
+  ]);
+  useEffect(() => {
+    validatePitchRef.current = validatePitch;
+  }, [validatePitch]);
 
-    const fallbackNotice =
-      "AI pitch review is unavailable; a local checklist was used. Configure a valid GROQ_API_KEY to enable AI review.";
-    if (!result.valid) {
-      setPitchMissing(result.missing);
-      const msg = `${usedLocalCheck ? `${fallbackNotice} ` : ""}Your pitch is missing: ${result.missing.join(", ")}. Please cover those points before I unlock the editor.`;
-      setErrorBanner(msg);
-      speakAi(msg);
-    } else {
-      setTranslation(result.translation);
-      setEditorLocked(false);
-      setStage("coding");
-      setDeadAirBanner(false);
-      setErrorBanner(usedLocalCheck ? fallbackNotice : null);
-      setPitchMissing([]);
-      speakAi(
-        "Editor unlocked. Excellent approach. Continue coding and narrate your implementation step by step.",
-      );
+  const submitCode = async () => {
+    if (stage !== "coding" || codeSubmissionLoading) return;
+    const submission = ++submissionSequenceRef.current;
+    setCodeSubmission(null);
+    setCodeSubmissionError(null);
+    setCodeSubmissionLoading(true);
+    try {
+      const response = await fetch("/api/submit-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          language,
+          titleSlug: problem.titleSlug,
+        }),
+      });
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (
+        !isCurrentCodeSubmission(
+          submissionSequenceRef.current,
+          submission,
+          loadSession().stage,
+        )
+      ) return;
+      const result = parseCodeSubmissionResponse(response.status, payload);
+      if (!result) {
+        setCodeSubmissionError(
+          parseCodeSubmissionError(response.status, payload) ??
+            "Code submission returned an unusable result. Your solution was not marked as passing; please retry.",
+        );
+        return;
+      }
+      setCodeSubmission(result);
+      speakAi(result.feedback);
+    } catch (error) {
+      if (
+        isCurrentCodeSubmission(
+          submissionSequenceRef.current,
+          submission,
+          loadSession().stage,
+        )
+      ) {
+        console.error("Code submission failed:", error);
+        setCodeSubmissionError(
+          "Could not reach the code execution service. Your solution was not marked as passing; check your connection and retry.",
+        );
+      }
+    } finally {
+      if (
+        isCurrentCodeSubmission(
+          submissionSequenceRef.current,
+          submission,
+          loadSession().stage,
+        )
+      ) {
+        setCodeSubmissionLoading(false);
+      }
     }
-    setPitchLoading(false);
   };
 
-  const fireCurveball = useCallback(async (
+  const fireCurveball = async (
     trigger: "nested_loop" | "missing_boundary" | "silence" | "random" = "random",
   ) => {
+    curveballFiredRef.current = true;
     updateSessionField("editorLocked", true);
     setCurveballLoading(true);
     try {
@@ -578,25 +784,35 @@ export default function InterviewArena({
     } finally {
       setCurveballLoading(false);
     }
-  }, [code, transcript, interviewerMode, problem.title, speakAi]);
+  };
 
-  // Auto-fire curveball once after CURVEBALL_AUTO_SEC seconds of coding.
+  useEffect(() => {
+    fireCurveballRef.current = fireCurveball;
+  });
+
+  // Start the curveball timer only after the candidate begins editing.
   useEffect(() => {
     if (stage !== "coding") return;
     if (curveballFiredRef.current) return;
-    if (silenceSeconds < CURVEBALL_AUTO_SEC) return;
-
-    curveballFiredRef.current = true;
-    const trigger = /for.*for|while.*while/i.test(code)
-      ? "nested_loop"
-      : !/if.*length|null|undefined|empty/i.test(code)
-        ? "missing_boundary"
-        : "random";
+    const codingStartedAt = codingStartedAtRef.current;
+    const delay = getCurveballDelay(
+      codingStartedAt,
+      Date.now(),
+      CURVEBALL_AUTO_SEC * 1000,
+    );
+    if (delay === null) return;
     const timeout = window.setTimeout(() => {
-      void fireCurveball(trigger);
-    }, 0);
+      if (curveballFiredRef.current) return;
+      curveballFiredRef.current = true;
+      const trigger = /for.*for|while.*while/i.test(code)
+        ? "nested_loop"
+        : !/if.*length|null|undefined|empty/i.test(code)
+          ? "missing_boundary"
+          : "random";
+      void fireCurveballRef.current(trigger);
+    }, delay);
     return () => window.clearTimeout(timeout);
-  }, [silenceSeconds, stage, code, fireCurveball]);
+  }, [stage, code]);
 
   const dismissCurveball = () => {
     if (!curveball) return;
@@ -608,7 +824,7 @@ export default function InterviewArena({
     setCurveball(null);
     setCurveballResponse("");
     setErrorBanner(null);
-    setTranscript((t) => `${t} ${response}`.trim());
+    updateTranscript((t) => `${t} ${response}`.trim());
     setEditorLocked(false);
     speakAi("Good reasoning. Keep going — finish your implementation and continue narrating.");
   };
@@ -755,6 +971,11 @@ export default function InterviewArena({
   };
 
   const resetSession = () => {
+    invalidatePitchValidation();
+    submissionSequenceRef.current += 1;
+    setCodeSubmissionLoading(false);
+    setCodeSubmission(null);
+    setCodeSubmissionError(null);
     stopSpeechCapture();
     writeSessionSnapshot({
       ...freshSession(),
@@ -769,10 +990,20 @@ export default function InterviewArena({
     setErrorBanner(null);
     setDeadAirBanner(false);
     setPitchMissing([]);
+    setPitchFeedback(null);
+    setPitchScore(null);
+    setPitchAttempts(0);
+    setPitchHints([]);
+    setPitchAttemptOver(false);
+    setShowReferenceApproach(false);
+    setReferenceApproach("");
     curveballFiredRef.current = false;
+    codingStartedAtRef.current = null;
   };
 
   const closeInterview = () => {
+    validationSequenceRef.current += 1;
+    submissionSequenceRef.current += 1;
     stopSpeechCapture();
     window.speechSynthesis?.cancel();
     onChooseAnotherProblem();
@@ -780,15 +1011,9 @@ export default function InterviewArena({
 
   // ── Derived values ───────────────────────────────────────────────────────
 
-  const runtimeResult = useMemo(
-    () => evaluateCode(code, problem.titleSlug, language),
-    [code, language, problem.titleSlug],
-  );
-  const fillerCount = useMemo(() => countFillerWords(transcript), [transcript]);
-  const wordCount = useMemo(
-    () => transcript.trim().split(/\s+/).filter(Boolean).length,
-    [transcript],
-  );
+  const runtimeResult = evaluateCode(code, problem.titleSlug, language);
+  const fillerCount = countFillerWords(transcript);
+  const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
   const verbalPercent = Math.min(90, Math.round((wordCount / Math.max(1, wordCount + 22)) * 100));
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -842,7 +1067,7 @@ export default function InterviewArena({
             )}
             <button
               type="button"
-              onClick={onChooseAnotherProblem}
+              onClick={closeInterview}
               className="rounded-full border border-stone-200 bg-[#f7f6f3] px-3 py-1 text-sm text-stone-600 hover:bg-[#eee9dc]"
             >
               Choose another problem
@@ -943,16 +1168,23 @@ export default function InterviewArena({
             {stage === "setup" && (
               <button
                 onClick={() => {
+                  invalidatePitchValidation();
                   setStage("pitch");
                   setEditorLocked(true);
-                  setTranscript("");
+                  updateTranscript("");
                   setTranslation("");
                   setScore(null);
+                  setPitchFeedback(null);
+                  setPitchScore(null);
+                  setPitchAttempts(0);
+                  setPitchHints([]);
+                  setPitchAttemptOver(false);
+                  setShowReferenceApproach(false);
+                  setReferenceApproach("");
+                  setErrorBanner(null);
                   curveballFiredRef.current = false;
                   setSilenceSeconds(0);
-                  speakAi(
-                    "Please describe your brute-force intuition, your chosen algorithm, and your time and space complexity. I will unlock the editor once I hear all three.",
-                  );
+                  startSpeechCapture();
                 }}
                 className="w-full rounded-xl bg-cyan-500 px-4 py-3 font-medium text-slate-950 transition hover:bg-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
               >
@@ -963,11 +1195,49 @@ export default function InterviewArena({
             {stage === "pitch" && (
               <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
                 <Lock size={14} className="mb-1 inline-block" aria-hidden />{" "}
-                <strong>Verbal lock active.</strong> Speak your approach to unlock the editor.
+                <strong>Verbal lock active.</strong> Explain your approach to unlock the editor.
+                <p className="mt-1 text-xs text-amber-200/80">
+                  Hinglish or English is fine. Your live transcript is checked against this problem.
+                  {pitchAttempts < 3 && ` ${3 - pitchAttempts} ${3 - pitchAttempts === 1 ? "attempt" : "attempts"} remaining.`}
+                </p>
+                {pitchFeedback && (
+                  <p className="mt-2 text-amber-100">{pitchFeedback}</p>
+                )}
                 {pitchMissing.length > 0 && (
                   <p className="mt-2 text-amber-200">
                     Still missing: {pitchMissing.join(", ")}.
                   </p>
+                )}
+                {pitchHints.length > 0 && !pitchAttemptOver && (
+                  <p className="mt-2 text-amber-200">
+                    Hint: {pitchHints[pitchHints.length - 1]}
+                  </p>
+                )}
+                {pitchAttemptOver && (
+                  <div className="mt-3 space-y-2">
+                    <p className="font-semibold text-rose-200">
+                      Attempt over after three unsuccessful explanations.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setShowReferenceApproach(true)}
+                        className="rounded-lg bg-amber-300 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-200"
+                      >
+                        See approach
+                      </button>
+                      <button
+                        onClick={closeInterview}
+                        className="rounded-lg border border-slate-500 px-3 py-2 text-xs text-slate-100 hover:bg-slate-700"
+                      >
+                        Choose another problem
+                      </button>
+                    </div>
+                    {showReferenceApproach && (
+                      <p className="rounded-lg bg-slate-950/70 p-3 text-amber-50">
+                        {referenceApproach || "A reference approach is not available for this problem."}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -987,20 +1257,30 @@ export default function InterviewArena({
                   <Unlock size={15} className="text-emerald-300" aria-label="Editor unlocked" />
                 )}
                 <span className="text-sm font-medium text-slate-200">
-                  {editorLocked ? "Verbal lock active" : "Editor unlocked"}
+                  {getEditorLockLabel(
+                    stage,
+                    editorLocked,
+                    curveballLoading,
+                    !!curveball,
+                  )}
                 </span>
               </div>
 
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={isListening ? stopSpeechCapture : startSpeechCapture}
+                  onClick={
+                    isListening
+                      ? () => stopSpeechCapture(true)
+                      : startSpeechCapture
+                  }
+                  disabled={stage === "pitch" && (pitchAttemptOver || pitchLoading)}
                   aria-pressed={isListening}
                   aria-label={isListening ? "Stop microphone" : "Start microphone"}
                   className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${
                     isListening
                       ? "bg-rose-500 text-white hover:bg-rose-400"
                       : "bg-slate-700 text-slate-100 hover:bg-slate-600"
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   {isListening ? <MicOff size={14} aria-hidden /> : <Mic size={14} aria-hidden />}
                   {isListening ? "Stop mic" : "Start mic"}
@@ -1009,14 +1289,18 @@ export default function InterviewArena({
                   )}
                 </button>
 
-                {(stage === "pitch" || stage === "coding") && (
+                {stage === "pitch" && !pitchAttemptOver && (
                   <button
                     onClick={validatePitch}
-                    disabled={pitchLoading}
+                    disabled={pitchLoading || isListening}
                     aria-busy={pitchLoading}
                     className="rounded-full bg-violet-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-violet-400 disabled:opacity-60"
                   >
-                    {pitchLoading ? "Validating…" : "Validate pitch"}
+                    {pitchLoading
+                      ? "Validating…"
+                      : isListening
+                        ? "Stop mic to validate"
+                        : "Validate pitch"}
                   </button>
                 )}
 
@@ -1043,7 +1327,13 @@ export default function InterviewArena({
                 language={MONACO_LANG[language]}
                 theme="vs-dark"
                 value={code}
-                onChange={(v) => setCode(v ?? "")}
+                onChange={(v) => {
+                  submissionSequenceRef.current += 1;
+                  setCodeSubmissionLoading(false);
+                  setCodeSubmission(null);
+                  setCodeSubmissionError(null);
+                  setCode(v ?? "");
+                }}
                 options={{
                   readOnly: editorLocked,
                   minimap: { enabled: false },
@@ -1060,23 +1350,65 @@ export default function InterviewArena({
 
             {/* Submit row */}
             {(stage === "coding" || stage === "submitted") && (
-              <div className="flex gap-3">
+              <div className="flex flex-col gap-3">
+                {stage === "coding" && (
+                  <button
+                    onClick={() => void submitCode()}
+                    disabled={codeSubmissionLoading}
+                    aria-busy={codeSubmissionLoading}
+                    className="w-full rounded-xl bg-cyan-400 px-3 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {codeSubmissionLoading
+                      ? "Running public sample tests…"
+                      : "Submit code"}
+                  </button>
+                )}
+                {codeSubmissionError && (
+                  <p role="alert" className="rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-sm text-rose-100">
+                    {codeSubmissionError}
+                  </p>
+                )}
+                {codeSubmission && (
+                  <div
+                    role="status"
+                    className={`space-y-3 rounded-xl border p-4 ${
+                      codeSubmission.passed
+                        ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+                        : "border-amber-400/40 bg-amber-500/10 text-amber-100"
+                    }`}
+                  >
+                    <p className="font-semibold">
+                      {codeSubmission.passed ? "Congratulations!" : "Keep working on your solution"}
+                      {" "}({codeSubmission.passedCases}/{codeSubmission.totalCases} public samples passed)
+                    </p>
+                    <p className="text-sm">{codeSubmission.feedback}</p>
+                    {codeSubmission.passed && (
+                      <div className="flex flex-wrap gap-2">
+                        {stage === "coding" && (
+                          <button
+                            onClick={() => void submitInterview()}
+                            disabled={scorecardLoading}
+                            className="rounded-lg bg-emerald-300 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-emerald-200 disabled:opacity-50"
+                          >
+                            {scorecardLoading ? "Preparing results…" : "See results"}
+                          </button>
+                        )}
+                        <button
+                          onClick={closeInterview}
+                          className="rounded-lg border border-emerald-200/40 px-3 py-2 text-xs font-semibold hover:bg-emerald-200/10"
+                        >
+                          Next question
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {curveball && (
                   <button
                     onClick={() => speakAi(curveball)}
                     className="flex-1 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/20"
                   >
                     Replay interviewer prompt
-                  </button>
-                )}
-                {stage === "coding" && (
-                  <button
-                    onClick={submitInterview}
-                    disabled={scorecardLoading}
-                    aria-busy={scorecardLoading}
-                    className="flex-1 rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
-                  >
-                    {scorecardLoading ? "Generating scorecard…" : "Submit interview"}
                   </button>
                 )}
               </div>
@@ -1093,10 +1425,29 @@ export default function InterviewArena({
                 <span className="text-xs uppercase tracking-[0.2em]">AI logic validator</span>
               </div>
               {pitchMissing.length > 0 ? (
-                <p className="text-sm text-amber-200">
-                  <AlertTriangle size={13} className="mr-1 inline-block" aria-hidden />
-                  Missing: {pitchMissing.join(", ")}
-                </p>
+                <div className="space-y-2 text-sm text-amber-200">
+                  {pitchScore !== null && (
+                    <p className="font-medium">
+                      Pitch score: {pitchScore}% (pass target{" "}
+                      {PITCH_PASS_THRESHOLDS[problem.difficulty]}%)
+                    </p>
+                  )}
+                  <p>
+                    <AlertTriangle size={13} className="mr-1 inline-block" aria-hidden />
+                    Missing: {pitchMissing.join(", ")}
+                  </p>
+                  {pitchFeedback && <p>{pitchFeedback}</p>}
+                </div>
+              ) : pitchFeedback ? (
+                <div className="space-y-2 text-sm text-amber-200">
+                  {pitchScore !== null && (
+                    <p className="font-medium">
+                      Pitch score: {pitchScore}% (pass target{" "}
+                      {PITCH_PASS_THRESHOLDS[problem.difficulty]}%)
+                    </p>
+                  )}
+                  <p>{pitchFeedback}</p>
+                </div>
               ) : (
                 <p className="text-sm text-slate-300">
                   {stage === "coding" || stage === "submitted"
@@ -1194,7 +1545,7 @@ export default function InterviewArena({
             </div>
             <textarea
               value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
+              onChange={(e) => updateTranscript(e.target.value)}
               aria-label="Interview transcript — edit manually if microphone is unavailable"
               className="h-36 w-full rounded-xl border border-slate-600 bg-slate-950 px-3 py-3 text-sm text-slate-100 outline-none focus:border-cyan-500"
               placeholder="Your speech appears here in real time. You can also type directly as a fallback…"

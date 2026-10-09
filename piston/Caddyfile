@@ -1,0 +1,7 @@
+{$PISTON_DOMAIN} {
+  basic_auth {
+    {$PISTON_AUTH_USERNAME} {$PISTON_AUTH_HASH}
+  }
+
+  reverse_proxy piston:2000
+}

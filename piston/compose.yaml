@@ -1,0 +1,35 @@
+services:
+  piston:
+    image: ghcr.io/engineer-man/piston
+    container_name: piston_api
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "127.0.0.1:2000:2000"
+    volumes:
+      - ./packages:/piston/packages
+    tmpfs:
+      - /tmp:exec
+
+  proxy:
+    image: caddy:2
+    container_name: piston_proxy
+    restart: unless-stopped
+    depends_on:
+      - piston
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PISTON_DOMAIN: ${PISTON_DOMAIN:?Set PISTON_DOMAIN in piston/.env}
+      PISTON_AUTH_USERNAME: ${PISTON_AUTH_USERNAME:?Set PISTON_AUTH_USERNAME in piston/.env}
+      PISTON_AUTH_HASH: ${PISTON_AUTH_HASH:?Set PISTON_AUTH_HASH in piston/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

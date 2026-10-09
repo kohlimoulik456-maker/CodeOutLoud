@@ -34,6 +34,12 @@ function isSavedProblem(value: unknown): value is SavedProblem {
     typeof problem.titleSlug === "string" &&
     ["Easy", "Medium", "Hard"].includes(problem.difficulty) &&
     typeof problem.content === "string" &&
+    (problem.executionSpec === undefined ||
+      problem.executionSpec === null ||
+      (!!problem.executionSpec &&
+        typeof problem.executionSpec.methodName === "string" &&
+        Array.isArray(problem.executionSpec.parameterTypes) &&
+        Array.isArray(problem.executionSpec.sampleCases))) &&
     Array.isArray(problem.topicTags) &&
     problem.topicTags.every(
       (tag) =>

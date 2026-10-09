@@ -8,6 +8,7 @@ import {
   type ProblemDifficulty,
   type ProblemSearchFilters,
 } from "../../interview/problem-types";
+import { parseProblemExecutionSpec } from "../../interview/problem-examples";
 
 const LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql/";
 const LANGUAGE_SLUGS: Record<InterviewLanguage, string> = {
@@ -38,6 +39,7 @@ const PROBLEM_DETAIL_QUERY = `
       titleSlug
       difficulty
       content
+      metaData
       topicTags { name slug }
       codeSnippets { langSlug code }
     }
@@ -62,6 +64,7 @@ type QuestionDetails = {
   titleSlug: string;
   difficulty: string;
   content: string;
+  metaData: string;
   topicTags: Array<{ name: string; slug: string }>;
   codeSnippets: Array<{ langSlug: string; code: string }>;
 };
@@ -209,6 +212,10 @@ export async function POST(request: Request) {
       content: sanitizeProblemHtml(question.content),
       topicTags: question.topicTags,
       codeTemplates,
+      executionSpec: parseProblemExecutionSpec(
+        question.content,
+        question.metaData,
+      ),
     };
     return NextResponse.json({ problem });
   } catch (error) {

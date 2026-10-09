@@ -47,6 +47,14 @@ export type LeetCodeProblem = {
   content: string;
   topicTags: Array<{ name: string; slug: string }>;
   codeTemplates: Record<InterviewLanguage, string>;
+  executionSpec: ProblemExecutionSpec | null;
+};
+
+export type ProblemExecutionSpec = {
+  methodName: string;
+  parameterTypes: string[];
+  returnType: string;
+  sampleCases: Array<{ args: unknown[]; expected: unknown }>;
 };
 
 export type ProblemSearchFilters = {
